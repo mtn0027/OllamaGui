@@ -36,6 +36,7 @@ class ChatbotGUI(QMainWindow):
         self.sidebar = None
         self.opacity_effect = None
         self.animation = None
+        self.stop_btn = None
 
         self.settings = {
             'temperature': 0.7,
@@ -86,6 +87,7 @@ class ChatbotGUI(QMainWindow):
         self.toggle_sidebar_btn = QPushButton("☰")
         self.toggle_sidebar_btn.setFixedSize(40, 40)
         self.toggle_sidebar_btn.setObjectName("circularBtn")
+        self.toggle_sidebar_btn.setToolTip("Toggle Sidebar")
         self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
 
         self.model_label = QLabel("Model: None")
@@ -94,11 +96,13 @@ class ChatbotGUI(QMainWindow):
         settings_btn = QPushButton("⚙️")
         settings_btn.setFixedSize(40, 40)
         settings_btn.setObjectName("circularBtn")
+        settings_btn.setToolTip("Settings")
         settings_btn.clicked.connect(self.open_settings)
 
         theme_btn = QPushButton("🌙")
         theme_btn.setFixedSize(40, 40)
         theme_btn.setObjectName("circularBtn")
+        theme_btn.setToolTip("Toggle Dark/Light Theme")
         theme_btn.clicked.connect(self.toggle_theme)
         self.theme_btn = theme_btn
 
@@ -141,10 +145,29 @@ class ChatbotGUI(QMainWindow):
         self.send_btn = QPushButton("Send ➤")
         self.send_btn.setFixedSize(100, 60)
         self.send_btn.setStyleSheet("border-radius: 20px; font-size: 14px;")
+        self.send_btn.setToolTip("Send Message")
         self.send_btn.clicked.connect(self.send_message)
+
+        # Stop button (hidden by default)
+        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn.setFixedSize(100, 60)
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                border-radius: 20px;
+                font-size: 14px;
+                background-color: #dc3545;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        self.stop_btn.setToolTip("Stop Generation")
+        self.stop_btn.clicked.connect(self.stop_generation)
+        self.stop_btn.setVisible(False)
 
         input_layout.addWidget(self.input_box)
         input_layout.addWidget(self.send_btn)
+        input_layout.addWidget(self.stop_btn)
 
         parent_layout.addLayout(input_layout)
 
@@ -196,6 +219,7 @@ class ChatbotGUI(QMainWindow):
         refresh_btn = QPushButton("🔄")
         refresh_btn.setFixedSize(35, 35)
         refresh_btn.setStyleSheet("border-radius: 17px; font-size: 14px;")
+        refresh_btn.setToolTip("Refresh Models List")
         refresh_btn.clicked.connect(self.load_models)
 
         model_layout.addWidget(self.model_selector, 1)
@@ -212,6 +236,7 @@ class ChatbotGUI(QMainWindow):
             }
             QPushButton:hover { background-color: #218838; }
         """)
+        download_btn.setToolTip("Download a New Model from Ollama")
         download_btn.clicked.connect(self.open_download_dialog)
         layout.addWidget(download_btn)
 
@@ -225,6 +250,7 @@ class ChatbotGUI(QMainWindow):
             }
             QPushButton:hover { background-color: #c82333; }
         """)
+        delete_btn.setToolTip("Delete Selected Model")
         delete_btn.clicked.connect(self.delete_model)
         layout.addWidget(delete_btn)
 
@@ -236,16 +262,19 @@ class ChatbotGUI(QMainWindow):
 
         save_btn = QPushButton("💾  Save Chat")
         save_btn.setStyleSheet(action_style)
+        save_btn.setToolTip("Save Chat to File")
         save_btn.clicked.connect(self.save_chat)
         layout.addWidget(save_btn)
 
         load_btn = QPushButton("📂  Load Chat")
         load_btn.setStyleSheet(action_style)
+        load_btn.setToolTip("Load Chat from File")
         load_btn.clicked.connect(self.load_chat)
         layout.addWidget(load_btn)
 
         clear_btn = QPushButton("🗑️  Clear Chat")
         clear_btn.setStyleSheet(action_style)
+        clear_btn.setToolTip("Clear Current Chat")
         clear_btn.clicked.connect(self.clear_chat)
         layout.addWidget(clear_btn)
 
@@ -315,7 +344,8 @@ class ChatbotGUI(QMainWindow):
         self.add_message(text, True)
         self.input_box.clear()
         self.input_box.setEnabled(False)
-        self.send_btn.setEnabled(False)
+        self.send_btn.setVisible(False)
+        self.stop_btn.setVisible(True)
         self.loading_label.setVisible(True)
 
         self.current_response = ""
@@ -374,14 +404,54 @@ class ChatbotGUI(QMainWindow):
 
         self.current_response = ""
         self.input_box.setEnabled(True)
-        self.send_btn.setEnabled(True)
+        self.send_btn.setVisible(True)
+        self.stop_btn.setVisible(False)
         self.loading_label.setVisible(False)
         self.input_box.setFocus()
+
+    def stop_generation(self):
+        """Stop the AI generation"""
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait()
+
+            # Add partial response if any
+            if self.current_response:
+                if len(self.messages) > 0 and self.messages[-1]["role"] == "user":
+                    self.messages.append({"role": "assistant", "content": self.current_response + " [Stopped]"})
+
+                    # Update the last bubble to show it was stopped
+                    if self.chat_layout.count() > 1:
+                        last_widget = self.chat_layout.itemAt(self.chat_layout.count() - 2).widget()
+                        if isinstance(last_widget, MessageBubble) and not last_widget.is_user:
+                            self.chat_layout.removeWidget(last_widget)
+                            last_widget.deleteLater()
+
+                    bubble = MessageBubble(self.current_response + "\n\n[Generation stopped by user]", False)
+                    self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
+
+                    # Update session
+                    if self.current_session_index >= 0:
+                        self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
+
+            self.current_response = ""
+            self.input_box.setEnabled(True)
+            self.send_btn.setVisible(True)
+            self.stop_btn.setVisible(False)
+            self.loading_label.setVisible(False)
+            self.loading_label.setText("⏹ Generation stopped")
+            QTimer.singleShot(2000, lambda: self.loading_label.setText("⏳ Thinking..."))
+            self.input_box.setFocus()
 
     def handle_error(self, error):
         """Handle error"""
         QMessageBox.critical(self, "Error", f"Failed: {error}")
-        self.finish_response()
+        self.current_response = ""
+        self.input_box.setEnabled(True)
+        self.send_btn.setVisible(True)
+        self.stop_btn.setVisible(False)
+        self.loading_label.setVisible(False)
+        self.input_box.setFocus()
 
     def scroll_to_bottom(self):
         """Scroll to bottom"""
