@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QFrame, QListWidget, QListWidgetItem,
                              QFileDialog, QMessageBox, QInputDialog, QLineEdit,
                              QMenu, QGraphicsOpacityEffect, QDialog)
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect
 from PyQt6.QtGui import QAction
 
 from gui.widgets import MessageBubble, AnimatedSidebar
@@ -31,6 +31,11 @@ class ChatbotGUI(QMainWindow):
         self.chat_sessions = []
         self.current_session_index = -1
         self.shown_no_models_warning = False
+
+        # Initialize these before init_ui
+        self.sidebar = None
+        self.opacity_effect = None
+        self.animation = None
 
         self.settings = {
             'temperature': 0.7,
@@ -249,36 +254,49 @@ class ChatbotGUI(QMainWindow):
     def toggle_sidebar(self):
         """Toggle sidebar"""
         self.sidebar_open = not self.sidebar_open
-        animation = QPropertyAnimation(self.sidebar, b"width")
-        animation.setDuration(300)
-        animation.setEasingCurve(QEasingCurve.Type.InOutQuart)
-        animation.setStartValue(0 if not self.sidebar_open else 300)
-        animation.setEndValue(300 if self.sidebar_open else 0)
-        animation.start()
-        self.animation = animation
+
+        # Use setMaximumWidth animation instead
+        self.animation = QPropertyAnimation(self.sidebar, b"maximumWidth")
+        self.animation.setDuration(300)
+        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuart)
+
+        if self.sidebar_open:
+            self.animation.setStartValue(0)
+            self.animation.setEndValue(300)
+        else:
+            self.animation.setStartValue(300)
+            self.animation.setEndValue(0)
+
+        self.animation.start()
 
     def toggle_theme(self):
         """Toggle theme"""
-        self.fade_out = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_out.setDuration(200)
-        self.fade_out.setStartValue(1.0)
-        self.fade_out.setEndValue(0.3)
-        self.fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        # Fade out
+        fade_out = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade_out.setDuration(200)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.3)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
-        self.fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_in.setDuration(200)
-        self.fade_in.setStartValue(0.3)
-        self.fade_in.setEndValue(1.0)
-        self.fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        # Fade in
+        fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+        fade_in.setDuration(200)
+        fade_in.setStartValue(0.3)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
         def change_theme():
             self.dark_mode = not self.dark_mode
             self.theme_btn.setText("☀️" if self.dark_mode else "🌙")
             self.apply_theme()
-            self.fade_in.start()
+            fade_in.start()
 
-        self.fade_out.finished.connect(change_theme)
-        self.fade_out.start()
+        fade_out.finished.connect(change_theme)
+        fade_out.start()
+
+        # Store references to prevent garbage collection
+        self.fade_out_anim = fade_out
+        self.fade_in_anim = fade_in
 
     def eventFilter(self, obj, event):
         """Handle events"""
@@ -345,8 +363,15 @@ class ChatbotGUI(QMainWindow):
 
     def finish_response(self):
         """Finish response"""
-        if self.current_response and self.messages[-1]["role"] == "user":
-            self.add_message(self.current_response, False)
+        # Don't call add_message again - the bubble is already displayed from update_response
+        # Just add to messages list and update session
+        if self.current_response and len(self.messages) > 0 and self.messages[-1]["role"] == "user":
+            self.messages.append({"role": "assistant", "content": self.current_response})
+
+            # Update session
+            if self.current_session_index >= 0:
+                self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
+
         self.current_response = ""
         self.input_box.setEnabled(True)
         self.send_btn.setEnabled(True)

@@ -2,10 +2,9 @@
 Custom widgets for the Ollama Chatbot GUI
 """
 
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit, QApplication
-from PyQt6.QtCore import Qt, pyqtProperty
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QApplication
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
-import markdown
 
 
 class MessageBubble(QFrame):
@@ -29,17 +28,13 @@ class MessageBubble(QFrame):
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         avatar.setStyleSheet("font-family: 'Segoe UI Emoji', 'Apple Color Emoji', sans-serif;")
 
-        # Message content
-        message = QTextEdit()
-        message.setReadOnly(True)
-        message.setHtml(markdown.markdown(text, extensions=['fenced_code', 'tables']))
-        message.setFrameStyle(QFrame.Shape.NoFrame)
-        message.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        message.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        # Auto-resize
-        doc_height = message.document().size().height()
-        message.setFixedHeight(int(doc_height) + 20)
+        # Message content - USE QLABEL INSTEAD OF QTEXTEDIT
+        message = QLabel(text)
+        message.setWordWrap(True)
+        message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        message.setMinimumWidth(200)
+        message.setMaximumWidth(800)
 
         # Copy button
         copy_btn = QPushButton("📋")
@@ -62,15 +57,15 @@ class MessageBubble(QFrame):
         # Layout arrangement
         if self.is_user:
             layout.addStretch()
-            layout.addWidget(message, 1)
+            layout.addWidget(message)
             layout.addWidget(copy_btn)
             layout.addWidget(avatar)
             message.setStyleSheet("""
-                QTextEdit {
+                QLabel {
                     background-color: #007AFF;
                     color: white;
                     border-radius: 15px;
-                    padding: 10px;
+                    padding: 12px;
                     font-size: 14px;
                     font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
                 }
@@ -78,14 +73,14 @@ class MessageBubble(QFrame):
         else:
             layout.addWidget(avatar)
             layout.addWidget(copy_btn)
-            layout.addWidget(message, 1)
+            layout.addWidget(message)
             layout.addStretch()
             message.setStyleSheet("""
-                QTextEdit {
+                QLabel {
                     background-color: #E9ECEF;
                     color: #212529;
                     border-radius: 15px;
-                    padding: 10px;
+                    padding: 12px;
                     font-size: 14px;
                     font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
                 }
@@ -97,15 +92,5 @@ class AnimatedSidebar(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._width = 0
-        self.target_width = 300
-        self.setFixedWidth(0)
-
-    @pyqtProperty(int)
-    def width(self):
-        return self._width
-
-    @width.setter
-    def width(self, value):
-        self._width = value
-        self.setFixedWidth(value)
+        self.setMaximumWidth(0)
+        self.setMinimumWidth(0)
