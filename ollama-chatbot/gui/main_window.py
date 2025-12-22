@@ -4,7 +4,11 @@ Main window for the Ollama Chatbot GUI
 
 import json
 import requests
+import subprocess
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTextEdit, QPushButton, QComboBox, QScrollArea,
                              QLabel, QFrame, QListWidget, QListWidgetItem,
@@ -23,9 +27,16 @@ class ChatbotGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
+
+        # Setup data directory
+        self.data_dir = Path.home() / ".ollama_chatbot"
+        self.data_dir.mkdir(exist_ok=True)
+        self.sessions_file = self.data_dir / "chat_sessions.json"
+
         self.messages = []
         self.current_response = ""
         self.worker = None
+        self.ollama_process = None
         self.dark_mode = False
         self.sidebar_open = False
         self.chat_sessions = []
@@ -44,9 +55,24 @@ class ChatbotGUI(QMainWindow):
             'system_prompt': "You are a helpful AI assistant."
         }
 
+        # Try to start Ollama
+        self.start_ollama()
+
         self.init_ui()
-        QTimer.singleShot(100, self.load_models)
-        self.create_new_session()
+
+        # Load saved sessions
+        self.load_saved_sessions()
+
+        # Load models after a brief delay
+        QTimer.singleShot(500, self.load_models)
+
+        # Create new session only if no sessions were loaded
+        if len(self.chat_sessions) == 0:
+            self.create_new_session()
+        else:
+            # Load the most recent session
+            self.chat_list.setCurrentRow(len(self.chat_sessions) - 1)
+            self.load_session(self.chat_list.currentItem())
 
     def init_ui(self):
         """Initialize the user interface"""
@@ -85,24 +111,41 @@ class ChatbotGUI(QMainWindow):
         top_bar = QHBoxLayout()
 
         self.toggle_sidebar_btn = QPushButton("☰")
-        self.toggle_sidebar_btn.setFixedSize(40, 40)
+        self.toggle_sidebar_btn.setFixedSize(45, 45)
         self.toggle_sidebar_btn.setObjectName("circularBtn")
         self.toggle_sidebar_btn.setToolTip("Toggle Sidebar")
+        self.toggle_sidebar_btn.setStyleSheet("""
+            QPushButton {
+                padding: 10px 15px;
+                font-size: 12px;
+                line-height: 18px;
+            }
+        """)
         self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
 
         self.model_label = QLabel("Model: None")
-        self.model_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.model_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-left: 10px;")
 
-        settings_btn = QPushButton("⚙️")
-        settings_btn.setFixedSize(40, 40)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setFixedSize(45, 45)
         settings_btn.setObjectName("circularBtn")
         settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+            }
+        """)
         settings_btn.clicked.connect(self.open_settings)
 
         theme_btn = QPushButton("🌙")
-        theme_btn.setFixedSize(40, 40)
+        theme_btn.setFixedSize(45, 45)
         theme_btn.setObjectName("circularBtn")
         theme_btn.setToolTip("Toggle Dark/Light Theme")
+        theme_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+            }
+        """)
         theme_btn.clicked.connect(self.toggle_theme)
         self.theme_btn = theme_btn
 
@@ -144,7 +187,13 @@ class ChatbotGUI(QMainWindow):
 
         self.send_btn = QPushButton("Send ➤")
         self.send_btn.setFixedSize(100, 60)
-        self.send_btn.setStyleSheet("border-radius: 20px; font-size: 14px;")
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                border-radius: 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+        """)
         self.send_btn.setToolTip("Send Message")
         self.send_btn.clicked.connect(self.send_message)
 
@@ -155,6 +204,7 @@ class ChatbotGUI(QMainWindow):
             QPushButton {
                 border-radius: 20px;
                 font-size: 14px;
+                font-weight: bold;
                 background-color: #dc3545;
             }
             QPushButton:hover {
@@ -217,8 +267,13 @@ class ChatbotGUI(QMainWindow):
         self.model_selector.currentTextChanged.connect(self.update_model_label)
 
         refresh_btn = QPushButton("🔄")
-        refresh_btn.setFixedSize(35, 35)
-        refresh_btn.setStyleSheet("border-radius: 17px; font-size: 14px;")
+        refresh_btn.setFixedSize(38, 38)
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                border-radius: 19px;
+                font-size: 18px;
+            }
+        """)
         refresh_btn.setToolTip("Refresh Models List")
         refresh_btn.clicked.connect(self.load_models)
 
@@ -229,9 +284,10 @@ class ChatbotGUI(QMainWindow):
         download_btn = QPushButton("📥 Download Model")
         download_btn.setStyleSheet("""
             QPushButton {
-                padding: 10px;
+                padding: 10px 15px;
                 border-radius: 18px;
                 font-weight: bold;
+                font-size: 13px;
                 background-color: #28a745;
             }
             QPushButton:hover { background-color: #218838; }
@@ -243,9 +299,10 @@ class ChatbotGUI(QMainWindow):
         delete_btn = QPushButton("🗑️ Delete Model")
         delete_btn.setStyleSheet("""
             QPushButton {
-                padding: 10px;
+                padding: 10px 15px;
                 border-radius: 18px;
                 font-weight: bold;
+                font-size: 13px;
                 background-color: #dc3545;
             }
             QPushButton:hover { background-color: #c82333; }
@@ -255,10 +312,17 @@ class ChatbotGUI(QMainWindow):
         layout.addWidget(delete_btn)
 
         actions_label = QLabel("📁 Actions")
-        actions_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        actions_label.setStyleSheet("font-weight: bold; margin-top: 10px; font-size: 13px;")
         layout.addWidget(actions_label)
 
-        action_style = "padding: 10px; border-radius: 18px; text-align: left; font-size: 13px;"
+        action_style = """
+            QPushButton {
+                padding: 10px 15px;
+                border-radius: 18px;
+                text-align: left;
+                font-size: 13px;
+            }
+        """
 
         save_btn = QPushButton("💾  Save Chat")
         save_btn.setStyleSheet(action_style)
@@ -316,7 +380,13 @@ class ChatbotGUI(QMainWindow):
 
         def change_theme():
             self.dark_mode = not self.dark_mode
-            self.theme_btn.setText("☀️" if self.dark_mode else "🌙")
+            self.theme_btn.setText("☀" if self.dark_mode else "🌙")
+            self.theme_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 20px;
+                    border-radius: 22px;
+                }
+            """)
             self.apply_theme()
             fade_in.start()
 
@@ -376,6 +446,9 @@ class ChatbotGUI(QMainWindow):
                 if item:
                     item.setText(f"{preview}\n{self.chat_sessions[self.current_session_index]['timestamp']}")
 
+            # Auto-save after adding message
+            self.save_sessions()
+
         QTimer.singleShot(100, self.scroll_to_bottom)
 
     def update_response(self, token):
@@ -401,6 +474,8 @@ class ChatbotGUI(QMainWindow):
             # Update session
             if self.current_session_index >= 0:
                 self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
+                # Auto-save
+                self.save_sessions()
 
         self.current_response = ""
         self.input_box.setEnabled(True)
@@ -433,6 +508,8 @@ class ChatbotGUI(QMainWindow):
                     # Update session
                     if self.current_session_index >= 0:
                         self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
+                        # Auto-save
+                        self.save_sessions()
 
             self.current_response = ""
             self.input_box.setEnabled(True)
@@ -518,6 +595,9 @@ class ChatbotGUI(QMainWindow):
         self.chat_list.setCurrentItem(item)
         self.clear_chat_display()
 
+        # Auto-save
+        self.save_sessions()
+
     def load_session(self, item):
         """Load session"""
         index = self.chat_list.row(item)
@@ -569,6 +649,9 @@ class ChatbotGUI(QMainWindow):
             timestamp = self.chat_sessions[index]['timestamp']
             item.setText(f"{new_name.strip()}\n{timestamp}")
 
+            # Auto-save
+            self.save_sessions()
+
     def delete_session(self):
         """Delete session"""
         if self.current_session_index < 0:
@@ -587,6 +670,9 @@ class ChatbotGUI(QMainWindow):
                 self.current_session_index = max(0, self.current_session_index - 1)
                 self.chat_list.setCurrentRow(self.current_session_index)
                 self.load_session(self.chat_list.currentItem())
+
+            # Auto-save
+            self.save_sessions()
 
     def open_download_dialog(self):
         """Open download dialog"""
@@ -618,6 +704,8 @@ class ChatbotGUI(QMainWindow):
         self.messages.clear()
         if self.current_session_index >= 0:
             self.chat_sessions[self.current_session_index]['messages'] = []
+            # Auto-save
+            self.save_sessions()
 
     def clear_chat_display(self):
         """Clear display"""
@@ -682,10 +770,138 @@ class ChatbotGUI(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up"""
+        # Save sessions before closing
+        self.save_sessions()
+
+        # Stop worker thread
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(1000)
+
+        # Stop Ollama server if we started it
+        if self.ollama_process:
+            try:
+                print("Stopping Ollama server...")
+                self.ollama_process.terminate()
+                self.ollama_process.wait(timeout=5)
+                print("✓ Ollama server stopped")
+            except Exception as e:
+                print(f"Error stopping Ollama: {e}")
+                try:
+                    self.ollama_process.kill()
+                except:
+                    pass
+
         event.accept()
+
+    def start_ollama(self):
+        """Attempt to start Ollama server"""
+        try:
+            # First check if Ollama is already running
+            try:
+                response = requests.get("http://localhost:11434/api/tags", timeout=2)
+                print("✓ Ollama is already running")
+                return
+            except:
+                pass
+
+            # Try to start Ollama
+            print("Starting Ollama server...")
+
+            if sys.platform == "win32":
+                # Windows
+                try:
+                    # Try to find Ollama in common locations
+                    ollama_paths = [
+                        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+                        r"C:\Program Files\Ollama\ollama.exe",
+                        "ollama.exe"  # If in PATH
+                    ]
+
+                    for ollama_path in ollama_paths:
+                        if os.path.exists(ollama_path) or ollama_path == "ollama.exe":
+                            # Start Ollama in background
+                            self.ollama_process = subprocess.Popen(
+                                [ollama_path if ollama_path != "ollama.exe" else "ollama", "serve"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                            print("✓ Ollama started successfully")
+                            return
+                except Exception as e:
+                    print(f"Failed to start Ollama on Windows: {e}")
+
+            elif sys.platform == "darwin":
+                # macOS
+                try:
+                    self.ollama_process = subprocess.Popen(
+                        ["ollama", "serve"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    print("✓ Ollama started successfully")
+                    return
+                except Exception as e:
+                    print(f"Failed to start Ollama on macOS: {e}")
+
+            else:
+                # Linux
+                try:
+                    self.ollama_process = subprocess.Popen(
+                        ["ollama", "serve"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    print("✓ Ollama started successfully")
+                    return
+                except Exception as e:
+                    print(f"Failed to start Ollama on Linux: {e}")
+
+            print("⚠ Could not auto-start Ollama. Please start it manually.")
+
+        except Exception as e:
+            print(f"Error starting Ollama: {e}")
+
+    def save_sessions(self):
+        """Save all chat sessions to file"""
+        try:
+            data = {
+                'sessions': self.chat_sessions,
+                'current_index': self.current_session_index,
+                'saved_at': datetime.now().isoformat()
+            }
+
+            with open(self.sessions_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+            print(f"✓ Saved {len(self.chat_sessions)} sessions")
+        except Exception as e:
+            print(f"Error saving sessions: {e}")
+
+    def load_saved_sessions(self):
+        """Load chat sessions from file"""
+        try:
+            if not self.sessions_file.exists():
+                print("No saved sessions found")
+                return
+
+            with open(self.sessions_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            self.chat_sessions = data.get('sessions', [])
+            saved_index = data.get('current_index', -1)
+
+            # Populate chat list
+            for session in self.chat_sessions:
+                item = QListWidgetItem(f"{session['name']}\n{session['timestamp']}")
+                self.chat_list.addItem(item)
+
+            print(f"✓ Loaded {len(self.chat_sessions)} sessions")
+
+        except Exception as e:
+            print(f"Error loading sessions: {e}")
+            self.chat_sessions = []
 
 
 LIGHT_THEME = """
@@ -693,7 +909,7 @@ LIGHT_THEME = """
     QTextEdit { background-color: #ffffff; color: #212529; border: 1px solid #dee2e6; 
                 border-radius: 12px; padding: 8px; font-size: 14px; }
     QPushButton { background-color: #007AFF; color: white; border: none; 
-                  border-radius: 20px; padding: 10px 15px; font-weight: bold; }
+                  border-radius: 15px; padding: 10px 15px; font-weight: bold; }
     QPushButton:hover { background-color: #0056b3; }
     QComboBox, QListWidget { background-color: #ffffff; border: 1px solid #dee2e6; 
                             border-radius: 10px; padding: 8px; }
@@ -707,7 +923,7 @@ DARK_THEME = """
     QTextEdit { background-color: #2d2d2d; color: #ffffff; border: 1px solid #404040; 
                 border-radius: 12px; padding: 8px; font-size: 14px; }
     QPushButton { background-color: #007AFF; color: white; border: none; 
-                  border-radius: 20px; padding: 10px 15px; font-weight: bold; }
+                  border-radius: 15px; padding: 10px 15px; font-weight: bold; }
     QPushButton:hover { background-color: #0056b3; }
     QComboBox, QListWidget { background-color: #2d2d2d; color: #ffffff; border: 1px solid #404040; 
                             border-radius: 10px; padding: 8px; }
