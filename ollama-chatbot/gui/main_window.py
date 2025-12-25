@@ -266,12 +266,12 @@ class ChatbotGUI(QMainWindow):
         self.model_selector.setMinimumHeight(35)
         self.model_selector.currentTextChanged.connect(self.update_model_label)
 
-        refresh_btn = QPushButton("🔄")
+        refresh_btn = QPushButton("🔄️")
         refresh_btn.setFixedSize(38, 38)
         refresh_btn.setStyleSheet("""
             QPushButton {
                 border-radius: 19px;
-                font-size: 18px;
+                font-size: 19px;
             }
         """)
         refresh_btn.setToolTip("Refresh Models List")
@@ -380,10 +380,10 @@ class ChatbotGUI(QMainWindow):
 
         def change_theme():
             self.dark_mode = not self.dark_mode
-            self.theme_btn.setText("☀" if self.dark_mode else "🌙")
+            self.theme_btn.setText("☀️" if self.dark_mode else "🌙")
             self.theme_btn.setStyleSheet("""
                 QPushButton {
-                    font-size: 20px;
+                    font-size: 15px;
                     border-radius: 22px;
                 }
             """)
@@ -434,6 +434,11 @@ class ChatbotGUI(QMainWindow):
     def add_message(self, text, is_user):
         """Add message"""
         bubble = MessageBubble(text, is_user)
+
+        # Connect delete signal for AI messages
+        if not is_user:
+            bubble.delete_requested.connect(self.delete_message)
+
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
         self.messages.append({"role": "user" if is_user else "assistant", "content": text})
 
@@ -451,6 +456,43 @@ class ChatbotGUI(QMainWindow):
 
         QTimer.singleShot(100, self.scroll_to_bottom)
 
+    def delete_message(self, bubble):
+        """Delete an AI message"""
+        reply = QMessageBox.question(
+            self,
+            'Delete Message',
+            'Delete this AI message?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Find the message in the layout and messages list
+            for i in range(self.chat_layout.count()):
+                widget = self.chat_layout.itemAt(i).widget()
+                if widget == bubble:
+                    # Remove from UI
+                    self.chat_layout.removeWidget(bubble)
+                    bubble.deleteLater()
+
+                    # Find and remove from messages list
+                    # Count only message bubbles before this one
+                    message_index = 0
+                    for j in range(i):
+                        w = self.chat_layout.itemAt(j).widget()
+                        if isinstance(w, MessageBubble):
+                            message_index += 1
+
+                    # Remove from messages list
+                    if message_index < len(self.messages):
+                        del self.messages[message_index]
+
+                    # Update session
+                    if self.current_session_index >= 0:
+                        self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
+                        self.save_sessions()
+
+                    break
+
     def update_response(self, token):
         """Update response"""
         self.current_response += token
@@ -461,6 +503,7 @@ class ChatbotGUI(QMainWindow):
                 last_widget.deleteLater()
 
         bubble = MessageBubble(self.current_response, False)
+        bubble.delete_requested.connect(self.delete_message)
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
         QTimer.singleShot(50, self.scroll_to_bottom)
 
@@ -503,6 +546,7 @@ class ChatbotGUI(QMainWindow):
                             last_widget.deleteLater()
 
                     bubble = MessageBubble(self.current_response + "\n\n[Generation stopped by user]", False)
+                    bubble.delete_requested.connect(self.delete_message)
                     self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
 
                     # Update session
@@ -613,6 +657,8 @@ class ChatbotGUI(QMainWindow):
         self.messages = session['messages'].copy()
         for msg in self.messages:
             bubble = MessageBubble(msg['content'], msg['role'] == 'user')
+            if msg['role'] == 'assistant':
+                bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
 
     def show_chat_context_menu(self, position):
@@ -916,6 +962,57 @@ LIGHT_THEME = """
     QListWidget::item { padding: 10px; border-radius: 10px; margin: 2px; }
     QListWidget::item:selected { background-color: #007AFF; color: white; }
     AnimatedSidebar { background-color: #ffffff; border-right: 1px solid #dee2e6; }
+    
+    /* Custom Scrollbar Styling - Light Theme */
+    QScrollBar:vertical {
+        background: #f8f9fa;
+        width: 12px;
+        border-radius: 6px;
+        margin: 0px;
+    }
+    QScrollBar::handle:vertical {
+        background: #c0c0c0;
+        min-height: 30px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #a0a0a0;
+    }
+    QScrollBar::handle:vertical:pressed {
+        background: #808080;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: none;
+    }
+    
+    QScrollBar:horizontal {
+        background: #f8f9fa;
+        height: 12px;
+        border-radius: 6px;
+        margin: 0px;
+    }
+    QScrollBar::handle:horizontal {
+        background: #c0c0c0;
+        min-width: 30px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    QScrollBar::handle:horizontal:hover {
+        background: #a0a0a0;
+    }
+    QScrollBar::handle:horizontal:pressed {
+        background: #808080;
+    }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+        width: 0px;
+    }
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+        background: none;
+    }
 """
 
 DARK_THEME = """
@@ -930,4 +1027,55 @@ DARK_THEME = """
     QListWidget::item { padding: 10px; border-radius: 10px; margin: 2px; }
     QListWidget::item:selected { background-color: #007AFF; }
     AnimatedSidebar { background-color: #252525; border-right: 1px solid #404040; }
+    
+    /* Custom Scrollbar Styling - Dark Theme */
+    QScrollBar:vertical {
+        background: #1e1e1e;
+        width: 12px;
+        border-radius: 6px;
+        margin: 0px;
+    }
+    QScrollBar::handle:vertical {
+        background: #4a4a4a;
+        min-height: 30px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #5a5a5a;
+    }
+    QScrollBar::handle:vertical:pressed {
+        background: #6a6a6a;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: none;
+    }
+    
+    QScrollBar:horizontal {
+        background: #1e1e1e;
+        height: 12px;
+        border-radius: 6px;
+        margin: 0px;
+    }
+    QScrollBar::handle:horizontal {
+        background: #4a4a4a;
+        min-width: 30px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    QScrollBar::handle:horizontal:hover {
+        background: #5a5a5a;
+    }
+    QScrollBar::handle:horizontal:pressed {
+        background: #6a6a6a;
+    }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+        width: 0px;
+    }
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+        background: none;
+    }
 """

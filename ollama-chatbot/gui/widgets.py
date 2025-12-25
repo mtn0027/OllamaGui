@@ -3,12 +3,14 @@ Custom widgets for the Ollama Chatbot GUI
 """
 
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QApplication
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 
 class MessageBubble(QFrame):
     """Widget for displaying a chat message bubble"""
+
+    delete_requested = pyqtSignal(object)  # Signal to request deletion
 
     def __init__(self, text, is_user, parent=None):
         super().__init__(parent)
@@ -54,6 +56,25 @@ class MessageBubble(QFrame):
             }
         """)
 
+        # Delete button (only for AI messages)
+        if not self.is_user:
+            delete_btn = QPushButton("🗑️")
+            delete_btn.setFixedSize(30, 30)
+            delete_btn.setToolTip("Delete this message")
+            delete_btn.clicked.connect(lambda: self.delete_requested.emit(self))
+            delete_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                    font-size: 14px;
+                    border-radius: 15px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(220, 53, 69, 0.2);
+                    border-radius: 15px;
+                }
+            """)
+
         # Layout arrangement
         if self.is_user:
             layout.addStretch()
@@ -72,6 +93,7 @@ class MessageBubble(QFrame):
             """)
         else:
             layout.addWidget(avatar)
+            layout.addWidget(delete_btn)  # Add delete button for AI messages
             layout.addWidget(copy_btn)
             layout.addWidget(message)
             layout.addStretch()
