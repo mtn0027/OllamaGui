@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QFrame, QListWidget, QListWidgetItem,
                              QFileDialog, QMessageBox, QInputDialog, QLineEdit,
                              QMenu, QGraphicsOpacityEffect, QDialog)
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize
+from PyQt6.QtGui import QAction, QIcon
 
 from gui.widgets import MessageBubble, AnimatedSidebar
 from gui.dialogs import SettingsDialog, ModelDownloadDialog
@@ -32,6 +32,9 @@ class ChatbotGUI(QMainWindow):
         self.data_dir = Path.home() / ".ollama_chatbot"
         self.data_dir.mkdir(exist_ok=True)
         self.sessions_file = self.data_dir / "chat_sessions.json"
+
+        # Icons directory
+        self.icons_dir = Path(__file__).parent.parent / "icons"
 
         self.messages = []
         self.current_response = ""
@@ -74,6 +77,15 @@ class ChatbotGUI(QMainWindow):
             self.chat_list.setCurrentRow(len(self.chat_sessions) - 1)
             self.load_session(self.chat_list.currentItem())
 
+    def load_icon(self, icon_name):
+        """Load an SVG icon from the icons directory"""
+        icon_path = self.icons_dir / icon_name
+        if icon_path.exists():
+            return QIcon(str(icon_path))
+        else:
+            print(f"Warning: Icon not found: {icon_path}")
+            return QIcon()
+
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle("Ollama Chat")
@@ -110,50 +122,38 @@ class ChatbotGUI(QMainWindow):
         """Setup the top bar"""
         top_bar = QHBoxLayout()
 
-        self.toggle_sidebar_btn = QPushButton("☰")
+        self.toggle_sidebar_btn = QPushButton()
+        self.toggle_sidebar_btn.setIcon(self.load_icon("menu.svg"))
+        self.toggle_sidebar_btn.setIconSize(QSize(20, 20))
         self.toggle_sidebar_btn.setFixedSize(45, 45)
         self.toggle_sidebar_btn.setObjectName("circularBtn")
         self.toggle_sidebar_btn.setToolTip("Toggle Sidebar")
-        self.toggle_sidebar_btn.setStyleSheet("""
-            QPushButton {
-                padding: 10px 15px;
-                font-size: 12px;
-                line-height: 18px;
-            }
-        """)
         self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
 
         self.model_label = QLabel("Model: None")
         self.model_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-left: 10px;")
 
-        settings_btn = QPushButton("⚙")
+        settings_btn = QPushButton()
+        settings_btn.setIcon(self.load_icon("settings.svg"))
+        settings_btn.setIconSize(QSize(20, 20))
         settings_btn.setFixedSize(45, 45)
         settings_btn.setObjectName("circularBtn")
         settings_btn.setToolTip("Settings")
-        settings_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 14px;
-            }
-        """)
         settings_btn.clicked.connect(self.open_settings)
 
-        theme_btn = QPushButton("🌙")
-        theme_btn.setFixedSize(45, 45)
-        theme_btn.setObjectName("circularBtn")
-        theme_btn.setToolTip("Toggle Dark/Light Theme")
-        theme_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 14px;
-            }
-        """)
-        theme_btn.clicked.connect(self.toggle_theme)
-        self.theme_btn = theme_btn
+        self.theme_btn = QPushButton()
+        self.theme_btn.setIcon(self.load_icon("moon.svg"))
+        self.theme_btn.setIconSize(QSize(20, 20))
+        self.theme_btn.setFixedSize(45, 45)
+        self.theme_btn.setObjectName("circularBtn")
+        self.theme_btn.setToolTip("Toggle Dark/Light Theme")
+        self.theme_btn.clicked.connect(self.toggle_theme)
 
         top_bar.addWidget(self.toggle_sidebar_btn)
         top_bar.addWidget(self.model_label)
         top_bar.addStretch()
         top_bar.addWidget(settings_btn)
-        top_bar.addWidget(theme_btn)
+        top_bar.addWidget(self.theme_btn)
 
         parent_layout.addLayout(top_bar)
 
@@ -185,7 +185,10 @@ class ChatbotGUI(QMainWindow):
         self.input_box.setStyleSheet("border-radius: 20px; padding: 12px; font-size: 14px;")
         self.input_box.installEventFilter(self)
 
-        self.send_btn = QPushButton("Send ➤")
+        self.send_btn = QPushButton("Send  ")
+        self.send_btn.setIcon(self.load_icon("send.svg"))
+        self.send_btn.setIconSize(QSize(18, 18))
+        self.send_btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)  # Icon on right
         self.send_btn.setFixedSize(100, 60)
         self.send_btn.setStyleSheet("""
             QPushButton {
@@ -198,7 +201,10 @@ class ChatbotGUI(QMainWindow):
         self.send_btn.clicked.connect(self.send_message)
 
         # Stop button (hidden by default)
-        self.stop_btn = QPushButton("⏹ Stop")
+        self.stop_btn = QPushButton("Stop  ")
+        self.stop_btn.setIcon(self.load_icon("stop.svg"))
+        self.stop_btn.setIconSize(QSize(18, 18))
+        self.stop_btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)  # Icon on right
         self.stop_btn.setFixedSize(100, 60)
         self.stop_btn.setStyleSheet("""
             QPushButton {
@@ -231,7 +237,9 @@ class ChatbotGUI(QMainWindow):
         title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 5px;")
         layout.addWidget(title)
 
-        new_chat_btn = QPushButton("➕ New Chat")
+        new_chat_btn = QPushButton("  New Chat")
+        new_chat_btn.setIcon(self.load_icon("plus.svg"))
+        new_chat_btn.setIconSize(QSize(16, 16))
         new_chat_btn.clicked.connect(self.create_new_session)
         new_chat_btn.setStyleSheet("padding: 12px; font-weight: bold; border-radius: 20px;")
         layout.addWidget(new_chat_btn)
@@ -266,12 +274,13 @@ class ChatbotGUI(QMainWindow):
         self.model_selector.setMinimumHeight(35)
         self.model_selector.currentTextChanged.connect(self.update_model_label)
 
-        refresh_btn = QPushButton("🔄️")
+        refresh_btn = QPushButton()
+        refresh_btn.setIcon(self.load_icon("refresh.svg"))
+        refresh_btn.setIconSize(QSize(20, 20))
         refresh_btn.setFixedSize(38, 38)
         refresh_btn.setStyleSheet("""
             QPushButton {
                 border-radius: 19px;
-                font-size: 19px;
             }
         """)
         refresh_btn.setToolTip("Refresh Models List")
@@ -281,7 +290,9 @@ class ChatbotGUI(QMainWindow):
         model_layout.addWidget(refresh_btn)
         layout.addLayout(model_layout)
 
-        download_btn = QPushButton("📥 Download Model")
+        download_btn = QPushButton("  Download Model")
+        download_btn.setIcon(self.load_icon("download.svg"))
+        download_btn.setIconSize(QSize(16, 16))
         download_btn.setStyleSheet("""
             QPushButton {
                 padding: 10px 15px;
@@ -296,7 +307,9 @@ class ChatbotGUI(QMainWindow):
         download_btn.clicked.connect(self.open_download_dialog)
         layout.addWidget(download_btn)
 
-        delete_btn = QPushButton("🗑️ Delete Model")
+        delete_btn = QPushButton("  Delete Model")
+        delete_btn.setIcon(self.load_icon("trash.svg"))
+        delete_btn.setIconSize(QSize(16, 16))
         delete_btn.setStyleSheet("""
             QPushButton {
                 padding: 10px 15px;
@@ -324,19 +337,25 @@ class ChatbotGUI(QMainWindow):
             }
         """
 
-        save_btn = QPushButton("💾  Save Chat")
+        save_btn = QPushButton("  Save Chat")
+        save_btn.setIcon(self.load_icon("save.svg"))
+        save_btn.setIconSize(QSize(16, 16))
         save_btn.setStyleSheet(action_style)
         save_btn.setToolTip("Save Chat to File")
         save_btn.clicked.connect(self.save_chat)
         layout.addWidget(save_btn)
 
-        load_btn = QPushButton("📂  Load Chat")
+        load_btn = QPushButton("  Load Chat")
+        load_btn.setIcon(self.load_icon("folder.svg"))
+        load_btn.setIconSize(QSize(16, 16))
         load_btn.setStyleSheet(action_style)
         load_btn.setToolTip("Load Chat from File")
         load_btn.clicked.connect(self.load_chat)
         layout.addWidget(load_btn)
 
-        clear_btn = QPushButton("🗑️  Clear Chat")
+        clear_btn = QPushButton("  Clear Chat")
+        clear_btn.setIcon(self.load_icon("trash.svg"))
+        clear_btn.setIconSize(QSize(16, 16))
         clear_btn.setStyleSheet(action_style)
         clear_btn.setToolTip("Clear Current Chat")
         clear_btn.clicked.connect(self.clear_chat)
@@ -380,13 +399,10 @@ class ChatbotGUI(QMainWindow):
 
         def change_theme():
             self.dark_mode = not self.dark_mode
-            self.theme_btn.setText("☀️" if self.dark_mode else "🌙")
-            self.theme_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 15px;
-                    border-radius: 22px;
-                }
-            """)
+            if self.dark_mode:
+                self.theme_btn.setIcon(self.load_icon("sun.svg"))
+            else:
+                self.theme_btn.setIcon(self.load_icon("moon.svg"))
             self.apply_theme()
             fade_in.start()
 
@@ -435,9 +451,8 @@ class ChatbotGUI(QMainWindow):
         """Add message"""
         bubble = MessageBubble(text, is_user)
 
-        # Connect delete signal for AI messages
-        if not is_user:
-            bubble.delete_requested.connect(self.delete_message)
+        # Connect delete signal for ALL messages (user and AI)
+        bubble.delete_requested.connect(self.delete_message)
 
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
         self.messages.append({"role": "user" if is_user else "assistant", "content": text})
@@ -457,11 +472,12 @@ class ChatbotGUI(QMainWindow):
         QTimer.singleShot(100, self.scroll_to_bottom)
 
     def delete_message(self, bubble):
-        """Delete an AI message"""
+        """Delete a message (user or AI)"""
+        message_type = "user message" if bubble.is_user else "AI message"
         reply = QMessageBox.question(
             self,
             'Delete Message',
-            'Delete this AI message?',
+            f'Delete this {message_type}?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -657,8 +673,7 @@ class ChatbotGUI(QMainWindow):
         self.messages = session['messages'].copy()
         for msg in self.messages:
             bubble = MessageBubble(msg['content'], msg['role'] == 'user')
-            if msg['role'] == 'assistant':
-                bubble.delete_requested.connect(self.delete_message)
+            bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
 
     def show_chat_context_menu(self, position):
@@ -668,8 +683,8 @@ class ChatbotGUI(QMainWindow):
             return
 
         menu = QMenu()
-        rename_action = QAction("✏️ Rename", self)
-        delete_action = QAction("🗑️ Delete", self)
+        rename_action = QAction(self.load_icon("edit.svg"), "Rename", self)
+        delete_action = QAction(self.load_icon("trash.svg"), "Delete", self)
 
         rename_action.triggered.connect(lambda: self.rename_session(item))
         delete_action.triggered.connect(self.delete_session)
