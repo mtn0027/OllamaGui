@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QMessageBox, QInputDialog, QLineEdit,
                              QMenu, QGraphicsOpacityEffect, QDialog)
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 
 from gui.widgets import MessageBubble, AnimatedSidebar
 from gui.dialogs import SettingsDialog, ModelDownloadDialog
@@ -62,6 +62,7 @@ class ChatbotGUI(QMainWindow):
         self.start_ollama()
 
         self.init_ui()
+        self.setup_shortcuts()
 
         # Load saved sessions
         self.load_saved_sessions()
@@ -127,7 +128,7 @@ class ChatbotGUI(QMainWindow):
         self.toggle_sidebar_btn.setIconSize(QSize(20, 20))
         self.toggle_sidebar_btn.setFixedSize(45, 45)
         self.toggle_sidebar_btn.setObjectName("circularBtn")
-        self.toggle_sidebar_btn.setToolTip("Toggle Sidebar")
+        self.toggle_sidebar_btn.setToolTip("Toggle Sidebar (Ctrl+B)")
         self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
 
         self.model_label = QLabel("Model: None")
@@ -138,7 +139,7 @@ class ChatbotGUI(QMainWindow):
         settings_btn.setIconSize(QSize(20, 20))
         settings_btn.setFixedSize(45, 45)
         settings_btn.setObjectName("circularBtn")
-        settings_btn.setToolTip("Settings")
+        settings_btn.setToolTip("Settings (Ctrl+,)")
         settings_btn.clicked.connect(self.open_settings)
 
         self.theme_btn = QPushButton()
@@ -146,7 +147,7 @@ class ChatbotGUI(QMainWindow):
         self.theme_btn.setIconSize(QSize(20, 20))
         self.theme_btn.setFixedSize(45, 45)
         self.theme_btn.setObjectName("circularBtn")
-        self.theme_btn.setToolTip("Toggle Dark/Light Theme")
+        self.theme_btn.setToolTip("Toggle Dark/Light Theme (Ctrl+T)")
         self.theme_btn.clicked.connect(self.toggle_theme)
 
         top_bar.addWidget(self.toggle_sidebar_btn)
@@ -242,6 +243,7 @@ class ChatbotGUI(QMainWindow):
         new_chat_btn.setIconSize(QSize(16, 16))
         new_chat_btn.clicked.connect(self.create_new_session)
         new_chat_btn.setStyleSheet("padding: 12px; font-weight: bold; border-radius: 20px;")
+        new_chat_btn.setToolTip("New Chat (Ctrl+N)")
         layout.addWidget(new_chat_btn)
 
         self.chat_list = QListWidget()
@@ -341,7 +343,7 @@ class ChatbotGUI(QMainWindow):
         save_btn.setIcon(self.load_icon("save.svg"))
         save_btn.setIconSize(QSize(16, 16))
         save_btn.setStyleSheet(action_style)
-        save_btn.setToolTip("Save Chat to File")
+        save_btn.setToolTip("Save Chat to File (Ctrl+S)")
         save_btn.clicked.connect(self.save_chat)
         layout.addWidget(save_btn)
 
@@ -349,7 +351,7 @@ class ChatbotGUI(QMainWindow):
         load_btn.setIcon(self.load_icon("folder.svg"))
         load_btn.setIconSize(QSize(16, 16))
         load_btn.setStyleSheet(action_style)
-        load_btn.setToolTip("Load Chat from File")
+        load_btn.setToolTip("Load Chat from File (Ctrl+O)")
         load_btn.clicked.connect(self.load_chat)
         layout.addWidget(load_btn)
 
@@ -357,7 +359,7 @@ class ChatbotGUI(QMainWindow):
         clear_btn.setIcon(self.load_icon("trash.svg"))
         clear_btn.setIconSize(QSize(16, 16))
         clear_btn.setStyleSheet(action_style)
-        clear_btn.setToolTip("Clear Current Chat")
+        clear_btn.setToolTip("Clear Current Chat (Ctrl+K)")
         clear_btn.clicked.connect(self.clear_chat)
         layout.addWidget(clear_btn)
 
@@ -761,12 +763,22 @@ class ChatbotGUI(QMainWindow):
 
     def clear_chat(self):
         """Clear chat"""
-        self.clear_chat_display()
-        self.messages.clear()
-        if self.current_session_index >= 0:
-            self.chat_sessions[self.current_session_index]['messages'] = []
-            # Auto-save
-            self.save_sessions()
+        # Add confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            'Clear Chat',
+            'Are you sure you want to clear the current chat? This cannot be undone.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No  # Default to No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.clear_chat_display()
+            self.messages.clear()
+            if self.current_session_index >= 0:
+                self.chat_sessions[self.current_session_index]['messages'] = []
+                # Auto-save
+                self.save_sessions()
 
     def clear_chat_display(self):
         """Clear display"""
@@ -963,6 +975,37 @@ class ChatbotGUI(QMainWindow):
         except Exception as e:
             print(f"Error loading sessions: {e}")
             self.chat_sessions = []
+
+    def setup_shortcuts(self):
+        toggle_sidebar_action = QAction(self)
+        toggle_sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
+        toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
+        self.addAction(toggle_sidebar_action)
+
+        save_action = QAction(self)
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self.save_chat)
+        self.addAction(save_action)
+
+        new_chat_action = QAction(self)
+        new_chat_action.setShortcut(QKeySequence("Ctrl+N"))
+        new_chat_action.triggered.connect(self.create_new_session)
+        self.addAction(new_chat_action)
+
+        clear_action = QAction(self)
+        clear_action.setShortcut(QKeySequence("Ctrl+K"))
+        clear_action.triggered.connect(self.clear_chat)
+        self.addAction(clear_action)
+
+        theme_action = QAction(self)
+        theme_action.setShortcut(QKeySequence("Ctrl+T"))
+        theme_action.triggered.connect(self.toggle_theme)
+        self.addAction(theme_action)
+
+        settings_action = QAction(self)
+        settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        settings_action.triggered.connect(self.open_settings)
+        self.addAction(settings_action)
 
 
 LIGHT_THEME = """
