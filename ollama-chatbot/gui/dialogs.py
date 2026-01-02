@@ -217,7 +217,31 @@ class ModelDownloadDialog(QDialog):
 
     def start_download(self):
         """Start downloading the model"""
+        import requests
         from workers.ollama_worker import ModelDownloadWorker
+
+        # Check if Ollama is running first
+        try:
+            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+        except requests.exceptions.ConnectionError:
+            QMessageBox.critical(
+                self,
+                "Ollama Not Running",
+                "Cannot download model: Ollama server is not running.\n\n"
+                "Please start Ollama first:\n"
+                "• Windows/Mac: Launch Ollama from your applications\n"
+                "• Linux: Run 'ollama serve' in terminal\n\n"
+                "Then try downloading again."
+            )
+            return
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Connection Error",
+                f"Cannot connect to Ollama server:\n{str(e)}\n\n"
+                "Please make sure Ollama is running."
+            )
+            return
 
         # Get the selected model
         current_data = self.model_dropdown.currentData()

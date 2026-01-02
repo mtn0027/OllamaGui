@@ -1007,7 +1007,6 @@ class ChatbotGUI(QMainWindow):
         settings_action.triggered.connect(self.open_settings)
         self.addAction(settings_action)
 
-
 LIGHT_THEME = """
     QMainWindow, QWidget { background-color: #f8f9fa; color: #212529; }
     QTextEdit { background-color: #ffffff; color: #212529; border: 1px solid #dee2e6; 
