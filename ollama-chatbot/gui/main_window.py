@@ -62,7 +62,6 @@ class ChatbotGUI(QMainWindow):
         self.start_ollama()
 
         self.init_ui()
-        self.setup_shortcuts()
 
         # Load saved sessions
         self.load_saved_sessions()
@@ -160,6 +159,12 @@ class ChatbotGUI(QMainWindow):
 
     def setup_chat_area(self, parent_layout):
         """Setup the chat display"""
+        # Create a widget to hold both scroll area and button
+        chat_wrapper = QWidget()
+        chat_wrapper_layout = QVBoxLayout(chat_wrapper)
+        chat_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        chat_wrapper_layout.setSpacing(0)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -169,12 +174,63 @@ class ChatbotGUI(QMainWindow):
         self.chat_layout.addStretch()
         self.scroll.setWidget(self.chat_widget)
 
+        # Add scroll area to wrapper
+        chat_wrapper_layout.addWidget(self.scroll)
+
+        # Scroll to bottom button (floating, positioned absolutely)
+        self.scroll_bottom_btn = QPushButton("↓")
+        self.scroll_bottom_btn.setParent(chat_wrapper)
+        self.scroll_bottom_btn.setFixedSize(50, 50)
+        self.scroll_bottom_btn.setToolTip("Scroll to bottom")
+        self.scroll_bottom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.scroll_bottom_btn.clicked.connect(self.scroll_to_bottom)
+        self.scroll_bottom_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #007AFF;
+                color: white;
+                border: 2px solid white;
+                border-radius: 25px;
+                font-size: 24px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0056b3;
+            }
+        """)
+        self.scroll_bottom_btn.raise_()  # Bring to front
+        self.scroll_bottom_btn.hide()  # Hidden by default
+
+        # Connect scroll bar to check if we should show the button
+        self.scroll.verticalScrollBar().valueChanged.connect(self.check_scroll_position)
+
         self.loading_label = QLabel("⏳ Thinking...")
         self.loading_label.setVisible(False)
         self.loading_label.setStyleSheet("color: #6c757d; font-style: italic;")
 
-        parent_layout.addWidget(self.scroll)
+        parent_layout.addWidget(chat_wrapper)
         parent_layout.addWidget(self.loading_label)
+
+    def check_scroll_position(self):
+        """Check if user has scrolled up and show/hide scroll-to-bottom button"""
+        scrollbar = self.scroll.verticalScrollBar()
+        # Show button if not at bottom (with 100px threshold)
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 100
+
+        if not at_bottom and scrollbar.maximum() > 0:
+            self.scroll_bottom_btn.show()
+            self.position_scroll_button()
+        else:
+            self.scroll_bottom_btn.hide()
+
+    def position_scroll_button(self):
+        """Position the scroll-to-bottom button in the bottom-right corner"""
+        if hasattr(self, 'scroll') and hasattr(self, 'scroll_bottom_btn'):
+            # Position relative to scroll area
+            scroll_width = self.scroll.width()
+            scroll_height = self.scroll.height()
+            btn_x = scroll_width - self.scroll_bottom_btn.width() - 20
+            btn_y = scroll_height - self.scroll_bottom_btn.height() - 20
+            self.scroll_bottom_btn.move(btn_x, btn_y)
 
     def setup_input_area(self, parent_layout):
         """Setup the input area"""
@@ -595,6 +651,7 @@ class ChatbotGUI(QMainWindow):
     def scroll_to_bottom(self):
         """Scroll to bottom"""
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
+        self.scroll_bottom_btn.hide()  # Hide button after scrolling
 
     def apply_theme(self):
         """Apply theme"""
@@ -867,6 +924,13 @@ class ChatbotGUI(QMainWindow):
 
         event.accept()
 
+    def resizeEvent(self, event):
+        """Handle window resize to reposition scroll-to-bottom button"""
+        super().resizeEvent(event)
+        # Reposition the scroll-to-bottom button
+        if hasattr(self, 'scroll_bottom_btn') and self.scroll_bottom_btn.isVisible():
+            self.position_scroll_button()
+
     def start_ollama(self):
         """Attempt to start Ollama server"""
         try:
@@ -976,36 +1040,6 @@ class ChatbotGUI(QMainWindow):
             print(f"Error loading sessions: {e}")
             self.chat_sessions = []
 
-    def setup_shortcuts(self):
-        toggle_sidebar_action = QAction(self)
-        toggle_sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
-        toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
-        self.addAction(toggle_sidebar_action)
-
-        save_action = QAction(self)
-        save_action.setShortcut(QKeySequence("Ctrl+S"))
-        save_action.triggered.connect(self.save_chat)
-        self.addAction(save_action)
-
-        new_chat_action = QAction(self)
-        new_chat_action.setShortcut(QKeySequence("Ctrl+N"))
-        new_chat_action.triggered.connect(self.create_new_session)
-        self.addAction(new_chat_action)
-
-        clear_action = QAction(self)
-        clear_action.setShortcut(QKeySequence("Ctrl+K"))
-        clear_action.triggered.connect(self.clear_chat)
-        self.addAction(clear_action)
-
-        theme_action = QAction(self)
-        theme_action.setShortcut(QKeySequence("Ctrl+T"))
-        theme_action.triggered.connect(self.toggle_theme)
-        self.addAction(theme_action)
-
-        settings_action = QAction(self)
-        settings_action.setShortcut(QKeySequence("Ctrl+,"))
-        settings_action.triggered.connect(self.open_settings)
-        self.addAction(settings_action)
 
 LIGHT_THEME = """
     QMainWindow, QWidget { background-color: #f8f9fa; color: #212529; }
