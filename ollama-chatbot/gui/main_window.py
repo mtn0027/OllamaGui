@@ -62,6 +62,7 @@ class ChatbotGUI(QMainWindow):
         self.start_ollama()
 
         self.init_ui()
+        self.setup_shortcuts()
 
         # Load saved sessions
         self.load_saved_sessions()
@@ -1040,6 +1041,36 @@ class ChatbotGUI(QMainWindow):
             print(f"Error loading sessions: {e}")
             self.chat_sessions = []
 
+    def setup_shortcuts(self):
+        toggle_sidebar_action = QAction(self)
+        toggle_sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
+        toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
+        self.addAction(toggle_sidebar_action)
+
+        save_action = QAction(self)
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self.save_chat)
+        self.addAction(save_action)
+
+        new_chat_action = QAction(self)
+        new_chat_action.setShortcut(QKeySequence("Ctrl+N"))
+        new_chat_action.triggered.connect(self.create_new_session)
+        self.addAction(new_chat_action)
+
+        clear_action = QAction(self)
+        clear_action.setShortcut(QKeySequence("Ctrl+K"))
+        clear_action.triggered.connect(self.clear_chat)
+        self.addAction(clear_action)
+
+        theme_action = QAction(self)
+        theme_action.setShortcut(QKeySequence("Ctrl+T"))
+        theme_action.triggered.connect(self.toggle_theme)
+        self.addAction(theme_action)
+
+        settings_action = QAction(self)
+        settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        settings_action.triggered.connect(self.open_settings)
+        self.addAction(settings_action)
 
 LIGHT_THEME = """
     QMainWindow, QWidget { background-color: #f8f9fa; color: #212529; }
