@@ -12,7 +12,7 @@
 
 1. **Клонирайте или свалете това repo**
    ```bash
-   git clone <твоето-repo-url>
+   git clone https://github.com/mtn0027/OllamaGui.git
    cd ollama-chatbot
    ```
 
