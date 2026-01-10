@@ -189,6 +189,7 @@ class MessageBubble(QFrame):
         super().__init__(parent)
         self.is_user = is_user
         self.text_content = text
+        self.content_widgets = []  # Store references to content widgets
 
         # Get the icons directory path
         self.icons_dir = Path(__file__).parent.parent / "icons"
@@ -260,10 +261,10 @@ class MessageBubble(QFrame):
         """)
 
         # Message content container
-        content_container = QFrame()
-        content_layout = QVBoxLayout(content_container)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(8)
+        self.content_container = QFrame()
+        self.content_layout = QVBoxLayout(self.content_container)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(8)
 
         # Parse content for code blocks
         parts = self.parse_markdown_content(text)
@@ -298,13 +299,15 @@ class MessageBubble(QFrame):
                             font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
                         }
                     """)
-                content_layout.addWidget(message)
+                self.content_layout.addWidget(message)
+                self.content_widgets.append(message)
 
             elif part[0] == 'code':
                 # Code block - make it wider
                 code_widget = CodeBlockWidget(part[1], part[2])
                 code_widget.setMinimumWidth(600)  # Minimum width for code blocks
-                content_layout.addWidget(code_widget)
+                self.content_layout.addWidget(code_widget)
+                self.content_widgets.append(code_widget)
 
         # Copy button
         copy_btn = QPushButton()
@@ -347,7 +350,7 @@ class MessageBubble(QFrame):
         # Layout arrangement
         if self.is_user:
             layout.addStretch()
-            layout.addWidget(content_container)
+            layout.addWidget(self.content_container)
             layout.addWidget(delete_btn)
             layout.addWidget(copy_btn)
             layout.addWidget(avatar)
@@ -355,8 +358,60 @@ class MessageBubble(QFrame):
             layout.addWidget(avatar)
             layout.addWidget(delete_btn)
             layout.addWidget(copy_btn)
-            layout.addWidget(content_container)
+            layout.addWidget(self.content_container)
             layout.addStretch()
+
+    def update_text(self, new_text):
+        """Update the message text efficiently without recreating widgets"""
+        self.text_content = new_text
+
+        # Clear existing content widgets
+        for widget in self.content_widgets:
+            widget.deleteLater()
+        self.content_widgets.clear()
+
+        # Parse and add new content
+        parts = self.parse_markdown_content(new_text)
+
+        for part in parts:
+            if part[0] == 'text':
+                # Regular text message
+                message = QLabel(part[1])
+                message.setWordWrap(True)
+                message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+                if self.is_user:
+                    message.setStyleSheet("""
+                        QLabel {
+                            background-color: #007AFF;
+                            color: white;
+                            border-radius: 15px;
+                            padding: 12px;
+                            font-size: 14px;
+                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
+                        }
+                    """)
+                else:
+                    message.setStyleSheet("""
+                        QLabel {
+                            background-color: #E9ECEF;
+                            color: #212529;
+                            border-radius: 15px;
+                            padding: 12px;
+                            font-size: 14px;
+                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
+                        }
+                    """)
+                self.content_layout.addWidget(message)
+                self.content_widgets.append(message)
+
+            elif part[0] == 'code':
+                # Code block
+                code_widget = CodeBlockWidget(part[1], part[2])
+                code_widget.setMinimumWidth(600)
+                self.content_layout.addWidget(code_widget)
+                self.content_widgets.append(code_widget)
 
 
 class AnimatedSidebar(QFrame):

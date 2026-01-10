@@ -22,8 +22,8 @@
    ```
 
 3. **Проверете дали Ollama работи**
-   - На Windows/Mac: Пусни Ollama приложението
-   - На Linux: Изпълни `ollama serve` в терминала
+   - На Windows/Mac: Пуснете Ollama приложението
+   - На Linux: Изпълнете `ollama serve` в терминала
 
 4. **Пуснете приложението**
    ```bash

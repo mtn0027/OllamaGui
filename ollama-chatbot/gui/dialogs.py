@@ -904,6 +904,7 @@ class ModelDownloadDialog(QDialog):
         # Check if Ollama is running
         try:
             response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            data = response.json()
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(
                 self,
@@ -931,6 +932,26 @@ class ModelDownloadDialog(QDialog):
             model_name = self.selected_model['model_id']
         else:
             QMessageBox.warning(self, "Error", "Please select a model or enter a custom model name!")
+            return
+
+        # Check if model already exists
+        installed_models = [model["name"] for model in data.get("models", [])]
+
+        # Check for exact match or base model match (e.g., llama3.2 matches llama3.2:latest)
+        model_exists = False
+        for installed in installed_models:
+            # Check exact match or base match
+            if installed == model_name or installed.startswith(model_name + ":") or model_name.startswith(installed.split(":")[0]):
+                model_exists = True
+                break
+
+        if model_exists:
+            QMessageBox.information(
+                self,
+                "Model Already Downloaded",
+                f"The model '{model_name}' is already downloaded.\n\n"
+                "You can find it in the model dropdown in the main window."
+            )
             return
 
         # Reset cancellation flag

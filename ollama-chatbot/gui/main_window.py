@@ -51,6 +51,8 @@ class ChatbotGUI(QMainWindow):
         self.opacity_effect = None
         self.animation = None
         self.stop_btn = None
+        self.current_message_bubble = None
+        self.update_counter = 0
 
         self.settings = {
             'temperature': 0.7,
@@ -77,6 +79,8 @@ class ChatbotGUI(QMainWindow):
             # Load the most recent session
             self.chat_list.setCurrentRow(len(self.chat_sessions) - 1)
             self.load_session(self.chat_list.currentItem())
+            # Scroll to bottom on startup
+            QTimer.singleShot(200, self.scroll_to_bottom)
 
     def load_icon(self, icon_name):
         """Load an SVG icon from the icons directory"""
@@ -569,23 +573,30 @@ class ChatbotGUI(QMainWindow):
                     break
 
     def update_response(self, token):
-        """Update response"""
+        """Update response efficiently"""
         self.current_response += token
-        if self.chat_layout.count() > 1:
-            last_widget = self.chat_layout.itemAt(self.chat_layout.count() - 2).widget()
-            if isinstance(last_widget, MessageBubble) and not last_widget.is_user:
-                self.chat_layout.removeWidget(last_widget)
-                last_widget.deleteLater()
+        self.update_counter += 1
 
-        bubble = MessageBubble(self.current_response, False)
-        bubble.delete_requested.connect(self.delete_message)
-        self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
-        QTimer.singleShot(50, self.scroll_to_bottom)
+        # Create bubble only once at the start
+        if self.current_message_bubble is None:
+            self.current_message_bubble = MessageBubble(self.current_response, False)
+            self.current_message_bubble.delete_requested.connect(self.delete_message)
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, self.current_message_bubble)
+        else:
+            # Update existing bubble text
+            self.current_message_bubble.update_text(self.current_response)
+
+        # Only scroll every 10 tokens to reduce overhead
+        if self.update_counter % 10 == 0:
+            QTimer.singleShot(50, self.scroll_to_bottom)
 
     def finish_response(self):
         """Finish response"""
-        # Don't call add_message again - the bubble is already displayed from update_response
-        # Just add to messages list and update session
+        # Reset the streaming bubble reference
+        self.current_message_bubble = None
+        self.update_counter = 0
+
+        # Add to messages list
         if self.current_response and len(self.messages) > 0 and self.messages[-1]["role"] == "user":
             self.messages.append({"role": "assistant", "content": self.current_response})
 
@@ -602,6 +613,9 @@ class ChatbotGUI(QMainWindow):
         self.loading_label.setVisible(False)
         self.input_box.setFocus()
 
+        # Final scroll to bottom
+        self.scroll_to_bottom()
+
     def stop_generation(self):
         """Stop the AI generation"""
         if self.worker and self.worker.isRunning():
@@ -613,16 +627,10 @@ class ChatbotGUI(QMainWindow):
                 if len(self.messages) > 0 and self.messages[-1]["role"] == "user":
                     self.messages.append({"role": "assistant", "content": self.current_response + " [Stopped]"})
 
-                    # Update the last bubble to show it was stopped
-                    if self.chat_layout.count() > 1:
-                        last_widget = self.chat_layout.itemAt(self.chat_layout.count() - 2).widget()
-                        if isinstance(last_widget, MessageBubble) and not last_widget.is_user:
-                            self.chat_layout.removeWidget(last_widget)
-                            last_widget.deleteLater()
-
-                    bubble = MessageBubble(self.current_response + "\n\n[Generation stopped by user]", False)
-                    bubble.delete_requested.connect(self.delete_message)
-                    self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
+                    # Update the bubble to show it was stopped
+                    if self.current_message_bubble:
+                        self.current_message_bubble.update_text(
+                            self.current_response + "\n\n[Generation stopped by user]")
 
                     # Update session
                     if self.current_session_index >= 0:
@@ -630,6 +638,9 @@ class ChatbotGUI(QMainWindow):
                         # Auto-save
                         self.save_sessions()
 
+            # Reset streaming state
+            self.current_message_bubble = None
+            self.update_counter = 0
             self.current_response = ""
             self.input_box.setEnabled(True)
             self.send_btn.setVisible(True)
@@ -735,6 +746,9 @@ class ChatbotGUI(QMainWindow):
             bubble = MessageBubble(msg['content'], msg['role'] == 'user')
             bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
+
+        # Scroll to bottom after loading messages
+        QTimer.singleShot(100, self.scroll_to_bottom)
 
     def show_chat_context_menu(self, position):
         """Show context menu"""
