@@ -5,7 +5,7 @@ Dialog windows for settings and model management
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QTextEdit, QDialogButtonBox, QLineEdit,
                              QPushButton, QMessageBox, QComboBox, QCheckBox,
-                             QScrollArea, QWidget, QFrame, QGridLayout)
+                             QScrollArea, QWidget, QFrame, QGridLayout, QProgressBar)
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QFont
 
@@ -426,6 +426,7 @@ class ModelDownloadDialog(QDialog):
         self.selected_model = None
         self.filtered_models = self.MODELS_DATABASE.copy()
         self.model_cards = []  # Keep track of all model cards
+        self.download_canceled = False  # Track if download was canceled
 
         # Check if parent has dark mode enabled
         self.is_dark_theme = False
@@ -648,6 +649,45 @@ class ModelDownloadDialog(QDialog):
         self.progress_label.setStyleSheet("color: #007AFF; font-weight: bold;")
         self.progress_label.setVisible(False)
         layout.addWidget(self.progress_label)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(25)
+        self.progress_bar.setTextVisible(True)
+
+        if self.is_dark_theme:
+            self.progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 2px solid #007AFF;
+                    border-radius: 12px;
+                    text-align: center;
+                    background-color: #2d2d2d;
+                    color: #ffffff;
+                    font-weight: bold;
+                }
+                QProgressBar::chunk {
+                    background-color: #007AFF;
+                    border-radius: 10px;
+                }
+            """)
+        else:
+            self.progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 2px solid #007AFF;
+                    border-radius: 12px;
+                    text-align: center;
+                    background-color: #f0f0f0;
+                    color: #212529;
+                    font-weight: bold;
+                }
+                QProgressBar::chunk {
+                    background-color: #007AFF;
+                    border-radius: 10px;
+                }
+            """)
+
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
 
         # Custom model input section (collapsible)
         custom_frame = QFrame()
@@ -893,12 +933,21 @@ class ModelDownloadDialog(QDialog):
             QMessageBox.warning(self, "Error", "Please select a model or enter a custom model name!")
             return
 
+        # Reset cancellation flag
+        self.download_canceled = False
+
         # Disable UI
         self.download_btn.setEnabled(False)
         self.search_input.setEnabled(False)
         self.custom_model_input.setEnabled(False)
         self.progress_label.setVisible(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
         self.progress_label.setText(f"Starting download of {model_name}...")
+        self.progress_label.setStyleSheet("color: #007AFF; font-weight: bold;")
+
+        # Change cancel button text
+        self.cancel_btn.setText("Cancel Download")
 
         # Start download worker
         self.worker = ModelDownloadWorker(model_name)
@@ -908,11 +957,26 @@ class ModelDownloadDialog(QDialog):
         self.worker.start()
 
     def update_progress(self, message):
-        """Update the progress label"""
+        """Update the progress label and bar"""
         self.progress_label.setText(message)
+
+        # Try to extract percentage from message
+        import re
+        match = re.search(r'(\d+\.?\d*)%', message)
+        if match:
+            try:
+                percentage = float(match.group(1))
+                self.progress_bar.setValue(int(percentage))
+            except:
+                pass
 
     def download_finished(self):
         """Handle successful download"""
+        # Don't show success if download was canceled
+        if self.download_canceled:
+            return
+
+        self.progress_bar.setValue(100)
         self.progress_label.setText("✅ Download complete!")
         self.progress_label.setStyleSheet("color: #28a745; font-weight: bold;")
         QMessageBox.information(self, "Success", "Model downloaded successfully!")
@@ -922,14 +986,40 @@ class ModelDownloadDialog(QDialog):
         """Handle download error"""
         self.progress_label.setText(f"❌ Error: {error}")
         self.progress_label.setStyleSheet("color: #dc3545; font-weight: bold;")
+        self.progress_bar.setVisible(False)
         self.download_btn.setEnabled(True)
         self.search_input.setEnabled(True)
         self.custom_model_input.setEnabled(True)
+        self.cancel_btn.setText("Cancel")
         QMessageBox.critical(self, "Error", f"Failed to download model: {error}")
 
     def cancel_download(self):
         """Cancel the download"""
         if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait()
-        self.reject()
+            # Download is in progress, stop it
+            reply = QMessageBox.question(
+                self,
+                "Cancel Download",
+                "Are you sure you want to cancel the download?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                # Set the canceled flag BEFORE stopping worker
+                self.download_canceled = True
+
+                self.worker.stop()
+                self.worker.wait()
+
+                # Update UI to show cancellation
+                self.progress_label.setText("⚠️ Download canceled")
+                self.progress_label.setStyleSheet("color: #ff9800; font-weight: bold;")
+                self.progress_bar.setVisible(False)
+                self.download_btn.setEnabled(True)
+                self.search_input.setEnabled(True)
+                self.custom_model_input.setEnabled(True)
+                self.cancel_btn.setText("Cancel")
+        else:
+            # No download in progress, just close the dialog
+            self.reject()
