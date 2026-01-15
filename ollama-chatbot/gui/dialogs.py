@@ -5,9 +5,11 @@ Dialog windows for settings and model management
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QTextEdit, QDialogButtonBox, QLineEdit,
                              QPushButton, QMessageBox, QComboBox, QCheckBox,
-                             QScrollArea, QWidget, QFrame, QGridLayout, QProgressBar)
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+                             QScrollArea, QWidget, QFrame, QGridLayout, QProgressBar, QGroupBox)
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
+import psutil
+import os
 
 
 class SettingsDialog(QDialog):
@@ -18,12 +20,13 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.setWindowTitle("Settings")
         self.setModal(True)
+        self.setMinimumWidth(500)
         self.setup_ui()
 
     def setup_ui(self):
         """Initialize the settings dialog UI"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(15)
 
         self.setStyleSheet("""
             QDialog, QLabel, QTextEdit {
@@ -35,7 +38,45 @@ class SettingsDialog(QDialog):
                 border-radius: 8px;
                 border: 1px solid #dee2e6;
             }
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QCheckBox {
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
         """)
+
+        # Display Settings Group
+        display_group = QGroupBox("🖥️ Display Settings")
+        display_layout = QVBoxLayout()
+
+        self.show_resources_checkbox = QCheckBox("Show resource usage in top bar")
+        self.show_resources_checkbox.setChecked(self.settings.get('show_resources', False))
+        self.show_resources_checkbox.setToolTip(
+            "Display real-time CPU and RAM usage of the Ollama server.\n"
+            "Shows how much resources the AI model is consuming."
+        )
+        display_layout.addWidget(self.show_resources_checkbox)
+
+        display_group.setLayout(display_layout)
+        layout.addWidget(display_group)
+
+        # Model Settings Group
+        model_group = QGroupBox("⚙️ Model Settings")
+        model_layout = QVBoxLayout()
 
         # Temperature slider
         temp_label = QLabel(f"Temperature: {self.settings['temperature']:.1f}")
@@ -63,6 +104,16 @@ class SettingsDialog(QDialog):
         self.system_input.setPlainText(self.settings['system_prompt'])
         self.system_input.setMaximumHeight(100)
 
+        model_layout.addWidget(temp_label)
+        model_layout.addWidget(self.temp_slider)
+        model_layout.addWidget(tokens_label)
+        model_layout.addWidget(self.tokens_slider)
+        model_layout.addWidget(system_label)
+        model_layout.addWidget(self.system_input)
+
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+
         # Buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -70,13 +121,6 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.save_settings)
         buttons.rejected.connect(self.reject)
 
-        # Add widgets
-        layout.addWidget(temp_label)
-        layout.addWidget(self.temp_slider)
-        layout.addWidget(tokens_label)
-        layout.addWidget(self.tokens_slider)
-        layout.addWidget(system_label)
-        layout.addWidget(self.system_input)
         layout.addWidget(buttons)
 
     def save_settings(self):
@@ -84,6 +128,7 @@ class SettingsDialog(QDialog):
         self.settings['temperature'] = self.temp_slider.value() / 10
         self.settings['max_tokens'] = self.tokens_slider.value()
         self.settings['system_prompt'] = self.system_input.toPlainText()
+        self.settings['show_resources'] = self.show_resources_checkbox.isChecked()
         self.accept()
 
 

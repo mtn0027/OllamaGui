@@ -7,6 +7,7 @@ import requests
 import subprocess
 import os
 import sys
+import psutil
 from datetime import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -51,14 +52,25 @@ class ChatbotGUI(QMainWindow):
         self.opacity_effect = None
         self.animation = None
         self.stop_btn = None
+
+        # Optimization variables
         self.current_message_bubble = None
         self.update_counter = 0
 
         self.settings = {
             'temperature': 0.7,
             'max_tokens': 2000,
-            'system_prompt': "You are a helpful AI assistant."
+            'system_prompt': "You are a helpful AI assistant.",
+            'show_resources': False
         }
+
+        # Get current process for monitoring
+        self.current_process = psutil.Process(os.getpid())
+        # Prime the CPU measurement (first call establishes baseline)
+        self.current_process.cpu_percent()
+
+        # Track Ollama processes for resource monitoring
+        self.ollama_processes_tracked = {}
 
         # Try to start Ollama
         self.start_ollama()
@@ -81,6 +93,11 @@ class ChatbotGUI(QMainWindow):
             self.load_session(self.chat_list.currentItem())
             # Scroll to bottom on startup
             QTimer.singleShot(200, self.scroll_to_bottom)
+
+        # Setup resource monitoring timer
+        self.resource_timer = QTimer()
+        self.resource_timer.timeout.connect(self.update_resource_display)
+        self.resource_timer.start(1000)  # Update every second
 
     def load_icon(self, icon_name):
         """Load an SVG icon from the icons directory"""
@@ -138,6 +155,19 @@ class ChatbotGUI(QMainWindow):
         self.model_label = QLabel("Model: None")
         self.model_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-left: 10px;")
 
+        # Resource usage labels (hidden by default)
+        self.resource_separator = QLabel("|")
+        self.resource_separator.setStyleSheet("color: #6c757d; margin: 0 10px;")
+        self.resource_separator.setVisible(False)
+
+        self.cpu_label = QLabel("CPU: 0%")
+        self.cpu_label.setStyleSheet("font-size: 12px; color: #6c757d;")
+        self.cpu_label.setVisible(False)
+
+        self.ram_label = QLabel("RAM: 0 MB")
+        self.ram_label.setStyleSheet("font-size: 12px; color: #6c757d; margin-left: 10px;")
+        self.ram_label.setVisible(False)
+
         settings_btn = QPushButton()
         settings_btn.setIcon(self.load_icon("settings.svg"))
         settings_btn.setIconSize(QSize(20, 20))
@@ -156,6 +186,9 @@ class ChatbotGUI(QMainWindow):
 
         top_bar.addWidget(self.toggle_sidebar_btn)
         top_bar.addWidget(self.model_label)
+        top_bar.addWidget(self.resource_separator)
+        top_bar.addWidget(self.cpu_label)
+        top_bar.addWidget(self.ram_label)
         top_bar.addStretch()
         top_bar.addWidget(settings_btn)
         top_bar.addWidget(self.theme_btn)
@@ -629,8 +662,7 @@ class ChatbotGUI(QMainWindow):
 
                     # Update the bubble to show it was stopped
                     if self.current_message_bubble:
-                        self.current_message_bubble.update_text(
-                            self.current_response + "\n\n[Generation stopped by user]")
+                        self.current_message_bubble.update_text(self.current_response + "\n\n[Generation stopped by user]")
 
                     # Update session
                     if self.current_session_index >= 0:
@@ -708,6 +740,102 @@ class ChatbotGUI(QMainWindow):
         self.model_label.setText(f"Model: {model if model else 'None'}")
         if self.current_session_index >= 0:
             self.chat_sessions[self.current_session_index]['model'] = model
+
+    def update_resource_display(self):
+        """Update CPU and RAM usage display in top bar for Ollama server"""
+        if not self.settings.get('show_resources', False):
+            self.resource_separator.setVisible(False)
+            self.cpu_label.setVisible(False)
+            self.ram_label.setVisible(False)
+            return
+
+        try:
+            # Number of logical CPU cores (for Task Manager–style normalization)
+            logical_cores = psutil.cpu_count(logical=True) or 1
+
+            # Find all current ollama processes
+            current_ollama_pids = set()
+            ollama_processes = []
+
+            for proc in psutil.process_iter(['name', 'pid']):
+                try:
+                    if proc.info['name'] and 'ollama' in proc.info['name'].lower():
+                        pid = proc.info['pid']
+                        current_ollama_pids.add(pid)
+
+                        # If this is a new process, prime its CPU measurement
+                        if pid not in self.ollama_processes_tracked:
+                            proc.cpu_percent()  # Prime (discard first reading)
+                            self.ollama_processes_tracked[pid] = {
+                                'process': proc,
+                                'first_measurement': True
+                            }
+
+                        ollama_processes.append(self.ollama_processes_tracked[pid])
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+
+            # Remove dead processes from tracking
+            dead_pids = set(self.ollama_processes_tracked.keys()) - current_ollama_pids
+            for pid in dead_pids:
+                del self.ollama_processes_tracked[pid]
+
+            if ollama_processes:
+                total_cpu = 0.0
+                total_ram = 0.0
+
+                # Sum resources from all ollama processes
+                for proc_data in ollama_processes:
+                    try:
+                        proc = proc_data['process']
+
+                        # CPU: normalize to Task Manager style (0–100%)
+                        cpu = proc.cpu_percent(interval=None) / logical_cores
+
+                        # Skip first real measurement after priming
+                        if proc_data['first_measurement']:
+                            proc_data['first_measurement'] = False
+                            cpu = 0.0
+
+                        # RAM: match Task Manager (Private Working Set on Windows)
+                        if sys.platform == "win32":
+                            mem_info = proc.memory_full_info()
+                            ram = mem_info.wset / (1024 * 1024)
+                        else:
+                            mem_info = proc.memory_info()
+                            ram = mem_info.rss / (1024 * 1024)
+
+                        total_cpu += cpu
+                        total_ram += ram
+
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+
+                # Update labels
+                self.cpu_label.setText(f"CPU: {total_cpu:.1f}%")
+                self.ram_label.setText(f"RAM: {total_ram:.0f} MB")
+
+                # Show labels
+                self.resource_separator.setVisible(True)
+                self.cpu_label.setVisible(True)
+                self.ram_label.setVisible(True)
+
+            else:
+                # Ollama not found
+                self.cpu_label.setText("Ollama: Not running")
+                self.ram_label.setText("")
+                self.resource_separator.setVisible(True)
+                self.cpu_label.setVisible(True)
+                self.ram_label.setVisible(False)
+
+        except Exception as e:
+            print(f"Error updating resource display: {e}")
+            self.cpu_label.setText("CPU: N/A")
+            self.ram_label.setText("RAM: N/A")
+            self.resource_separator.setVisible(True)
+            self.cpu_label.setVisible(True)
+            self.ram_label.setVisible(True)
 
     def create_new_session(self):
         """Create new session"""
@@ -911,12 +1039,18 @@ class ChatbotGUI(QMainWindow):
     def open_settings(self):
         """Open settings"""
         dialog = SettingsDialog(self.settings, self)
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Update resource display visibility immediately
+            self.update_resource_display()
 
     def closeEvent(self, event):
         """Clean up"""
         # Save sessions before closing
         self.save_sessions()
+
+        # Stop resource timer
+        if hasattr(self, 'resource_timer'):
+            self.resource_timer.stop()
 
         # Stop worker thread
         if self.worker and self.worker.isRunning():
