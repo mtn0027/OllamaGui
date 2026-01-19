@@ -52,16 +52,41 @@ class SettingsDialog(QDialog):
             }
             QCheckBox {
                 spacing: 5px;
+                padding: 10px;
             }
             QCheckBox::indicator {
                 width: 18px;
                 height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+                background-color: white;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #007AFF;
+                border-color: #007AFF;
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8cGF0aCBkPSJNMTAgMkw0LjUgNy41TDIgNSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBmaWxsPSJub25lIi8+Cjwvc3ZnPg==);
+            }
+            QCheckBox::indicator:hover {
+                border-color: #007AFF;
             }
         """)
 
-        # Display Settings Group
+        # Display Settings Group with border
         display_group = QGroupBox("🖥️ Display Settings")
         display_layout = QVBoxLayout()
+
+        # Add frame around checkbox
+        checkbox_frame = QFrame()
+        checkbox_frame.setStyleSheet("""
+            QFrame {
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                padding: 8px;
+                background-color: rgba(0, 0, 0, 0.02);
+            }
+        """)
+        checkbox_frame_layout = QVBoxLayout(checkbox_frame)
+        checkbox_frame_layout.setContentsMargins(5, 5, 5, 5)
 
         self.show_resources_checkbox = QCheckBox("Show resource usage in top bar")
         self.show_resources_checkbox.setChecked(self.settings.get('show_resources', False))
@@ -69,7 +94,9 @@ class SettingsDialog(QDialog):
             "Display real-time CPU and RAM usage of the Ollama server.\n"
             "Shows how much resources the AI model is consuming."
         )
-        display_layout.addWidget(self.show_resources_checkbox)
+
+        checkbox_frame_layout.addWidget(self.show_resources_checkbox)
+        display_layout.addWidget(checkbox_frame)
 
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
@@ -946,19 +973,29 @@ class ModelDownloadDialog(QDialog):
         import requests
         from workers.ollama_worker import ModelDownloadWorker
 
-        # Check if Ollama is running
+        # Check if Ollama is running with improved error handling
         try:
             response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            response.raise_for_status()
             data = response.json()
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(
                 self,
                 "Ollama Not Running",
                 "Cannot download model: Ollama server is not running.\n\n"
-                "Please start Ollama first:\n"
-                "• Windows/Mac: Launch Ollama from your applications\n"
+                "Please start Ollama:\n"
+                "• Windows: Launch 'Ollama' from Start Menu\n"
+                "• macOS: Open Ollama.app from Applications\n"
                 "• Linux: Run 'ollama serve' in terminal\n\n"
                 "Then try downloading again."
+            )
+            return
+        except requests.exceptions.Timeout:
+            QMessageBox.critical(
+                self,
+                "Connection Timeout",
+                "Ollama server is not responding.\n\n"
+                "Please check that Ollama is running properly."
             )
             return
         except Exception as e:

@@ -3,8 +3,9 @@ Custom widgets for the Ollama Chatbot GUI
 """
 
 import re
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QApplication, QVBoxLayout, QTextEdit
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QApplication,
+                             QVBoxLayout, QTextEdit, QWidget, QLineEdit)
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont, QIcon, QSyntaxHighlighter, QTextCharFormat, QColor
 from pathlib import Path
 
@@ -189,7 +190,8 @@ class MessageBubble(QFrame):
         super().__init__(parent)
         self.is_user = is_user
         self.text_content = text
-        self.content_widgets = []  # Store references to content widgets
+        self.search_text = None
+        self.is_current_match = False
 
         # Get the icons directory path
         self.icons_dir = Path(__file__).parent.parent / "icons"
@@ -300,14 +302,12 @@ class MessageBubble(QFrame):
                         }
                     """)
                 self.content_layout.addWidget(message)
-                self.content_widgets.append(message)
 
             elif part[0] == 'code':
                 # Code block - make it wider
                 code_widget = CodeBlockWidget(part[1], part[2])
                 code_widget.setMinimumWidth(600)  # Minimum width for code blocks
                 self.content_layout.addWidget(code_widget)
-                self.content_widgets.append(code_widget)
 
         # Copy button
         copy_btn = QPushButton()
@@ -366,9 +366,10 @@ class MessageBubble(QFrame):
         self.text_content = new_text
 
         # Clear existing content widgets
-        for widget in self.content_widgets:
-            widget.deleteLater()
-        self.content_widgets.clear()
+        while self.content_layout.count() > 0:
+            item = self.content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
         # Parse and add new content
         parts = self.parse_markdown_content(new_text)
@@ -404,14 +405,348 @@ class MessageBubble(QFrame):
                         }
                     """)
                 self.content_layout.addWidget(message)
-                self.content_widgets.append(message)
 
             elif part[0] == 'code':
                 # Code block
                 code_widget = CodeBlockWidget(part[1], part[2])
                 code_widget.setMinimumWidth(600)
                 self.content_layout.addWidget(code_widget)
-                self.content_widgets.append(code_widget)
+
+    def highlight_text(self, search_text):
+        """Highlight search text in the message"""
+        self.search_text = search_text.lower()
+        self._apply_highlight(False)
+
+    def set_current_match(self, is_current):
+        """Set whether this is the current search match"""
+        self.is_current_match = is_current
+        if hasattr(self, 'search_text') and self.search_text:
+            self._apply_highlight(is_current)
+
+    def clear_highlight(self):
+        """Clear search highlighting"""
+        self.search_text = None
+        self.is_current_match = False
+
+        # Reset all text widgets to original style
+        for i in range(self.content_layout.count()):
+            widget = self.content_layout.itemAt(i).widget()
+            if isinstance(widget, QLabel):
+                # Restore original styling
+                if self.is_user:
+                    widget.setStyleSheet("""
+                        QLabel {
+                            background-color: #007AFF;
+                            color: white;
+                            border-radius: 15px;
+                            padding: 12px;
+                            font-size: 14px;
+                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
+                        }
+                    """)
+                else:
+                    widget.setStyleSheet("""
+                        QLabel {
+                            background-color: #E9ECEF;
+                            color: #212529;
+                            border-radius: 15px;
+                            padding: 12px;
+                            font-size: 14px;
+                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
+                        }
+                    """)
+                # Reset to plain text
+                widget.setTextFormat(Qt.TextFormat.PlainText)
+                widget.setText(widget.text())
+
+    def _apply_highlight(self, is_current):
+        """Apply highlighting to matching text"""
+        if not hasattr(self, 'search_text') or not self.search_text:
+            return
+
+        # Highlight color - orange for current match, yellow for others
+        highlight_color = "#FFA500" if is_current else "#FFFF00"
+
+        for i in range(self.content_layout.count()):
+            widget = self.content_layout.itemAt(i).widget()
+            if isinstance(widget, QLabel):
+                # Get original text
+                original_text = self.text_content
+
+                # Create highlighted HTML
+                highlighted_text = self._create_highlighted_html(
+                    original_text,
+                    self.search_text,
+                    highlight_color
+                )
+
+                # Set HTML text
+                widget.setTextFormat(Qt.TextFormat.RichText)
+                widget.setText(highlighted_text)
+
+    def _create_highlighted_html(self, text, search_text, highlight_color):
+        """Create HTML with highlighted search terms"""
+        # Escape HTML special characters in the original text
+        text_escaped = (text
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('"', '&quot;')
+            .replace("'", '&#39;')
+        )
+
+        # Create a case-insensitive regex pattern
+        pattern = re.compile(re.escape(search_text), re.IGNORECASE)
+
+        # Replace matches with highlighted version
+        def highlight_match(match):
+            matched_text = match.group(0)
+            return f'<span style="background-color: {highlight_color}; color: black; padding: 2px 4px; border-radius: 3px; font-weight: bold;">{matched_text}</span>'
+
+        highlighted = pattern.sub(highlight_match, text_escaped)
+
+        # Preserve line breaks
+        highlighted = highlighted.replace('\n', '<br>')
+
+        return highlighted
+
+
+class SearchBar(QWidget):
+    """Animated search bar that slides down from top"""
+
+    close_requested = pyqtSignal()
+    search_changed = pyqtSignal(str)
+    next_requested = pyqtSignal()
+    previous_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.icons_dir = Path(__file__).parent.parent / "icons"
+        self.is_visible = False
+        self.setup_ui()
+
+    def load_icon(self, icon_name):
+        """Load an SVG icon from the icons directory"""
+        icon_path = self.icons_dir / icon_name
+        if icon_path.exists():
+            return QIcon(str(icon_path))
+        return QIcon()
+
+    def setup_ui(self):
+        """Setup the search bar UI"""
+        self.setFixedHeight(0)  # Start hidden
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(15, 8, 15, 8)
+        layout.setSpacing(10)
+
+        # Search icon/label
+        search_label = QLabel("🔍")
+        search_label.setStyleSheet("font-size: 16px;")
+        layout.addWidget(search_label)
+
+        # Search input
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search in chat...")
+        self.search_input.textChanged.connect(self.on_search_changed)
+        self.search_input.returnPressed.connect(self.on_next_clicked)
+        self.search_input.setFixedHeight(32)
+        layout.addWidget(self.search_input)
+
+        # Results counter
+        self.results_label = QLabel("")
+        self.results_label.setStyleSheet("color: #6c757d; font-size: 12px;")
+        self.results_label.setMinimumWidth(80)
+        layout.addWidget(self.results_label)
+
+        # Previous button
+        self.prev_btn = QPushButton()
+        self.prev_btn.setIcon(self.load_icon("up.svg"))
+        self.prev_btn.setIconSize(QSize(16, 16))
+        self.prev_btn.setFixedSize(32, 32)
+        self.prev_btn.setToolTip("Previous (Shift+Enter)")
+        self.prev_btn.clicked.connect(self.on_previous_clicked)
+        layout.addWidget(self.prev_btn)
+
+        # Next button
+        self.next_btn = QPushButton()
+        self.next_btn.setIcon(self.load_icon("down.svg"))
+        self.next_btn.setIconSize(QSize(16, 16))
+        self.next_btn.setFixedSize(32, 32)
+        self.next_btn.setToolTip("Next (Enter)")
+        self.next_btn.clicked.connect(self.on_next_clicked)
+        layout.addWidget(self.next_btn)
+
+        # Close button
+        close_btn = QPushButton("×")
+        close_btn.setFixedSize(32, 32)
+        close_btn.setToolTip("Close (Esc)")
+        close_btn.clicked.connect(self.hide_animated)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                border-radius: 16px;
+                background-color: transparent;
+                border: 1px solid #dee2e6;
+                font-size: 20px;
+                font-weight: bold;
+                color: #6c757d;
+            }
+            QPushButton:hover {
+                background-color: rgba(220, 53, 69, 0.1);
+                border: 1px solid #dc3545;
+                color: #dc3545;
+            }
+        """)
+        layout.addWidget(close_btn)
+
+        # Apply default light theme
+        self.apply_light_theme()
+
+    def show_animated(self):
+        """Show the search bar with slide down animation"""
+        if self.is_visible:
+            return
+
+        self.is_visible = True
+        self.setVisible(True)
+
+        # Animation
+        self.animation = QPropertyAnimation(self, b"maximumHeight")
+        self.animation.setDuration(200)
+        self.animation.setStartValue(0)
+        self.animation.setEndValue(50)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation.start()
+
+        # Focus the search input
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+
+    def hide_animated(self):
+        """Hide the search bar with slide up animation"""
+        if not self.is_visible:
+            return
+
+        self.is_visible = False
+
+        # Animation
+        self.animation = QPropertyAnimation(self, b"maximumHeight")
+        self.animation.setDuration(200)
+        self.animation.setStartValue(50)
+        self.animation.setEndValue(0)
+        self.animation.setEasingCurve(QEasingCurve.Type.InCubic)
+        self.animation.finished.connect(lambda: self.setVisible(False))
+        self.animation.start()
+
+        # Clear search
+        self.search_input.clear()
+        self.close_requested.emit()
+
+    def on_search_changed(self, text):
+        """Handle search text change"""
+        self.search_changed.emit(text)
+
+    def on_next_clicked(self):
+        """Handle next button click"""
+        self.next_requested.emit()
+
+    def on_previous_clicked(self):
+        """Handle previous button click"""
+        self.previous_requested.emit()
+
+    def update_results_label(self, current, total):
+        """Update the results counter label"""
+        if total == 0:
+            self.results_label.setText("No results")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+        else:
+            self.results_label.setText(f"{current}/{total}")
+            self.prev_btn.setEnabled(total > 1)
+            self.next_btn.setEnabled(total > 1)
+
+    def keyPressEvent(self, event):
+        """Handle key press events"""
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide_animated()
+        elif event.key() == Qt.Key.Key_Return and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.on_previous_clicked()
+        else:
+            super().keyPressEvent(event)
+
+    def apply_dark_theme(self):
+        """Apply dark theme styling"""
+        self.setStyleSheet("""
+            SearchBar {
+                background-color: #2d2d2d;
+                border-bottom: 2px solid #404040;
+            }
+        """)
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #404040;
+                border-radius: 16px;
+                padding: 6px 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #007AFF;
+            }
+        """)
+        self.results_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
+
+        # Update button styles for dark theme
+        button_style = """
+            QPushButton {
+                border-radius: 16px;
+                background-color: transparent;
+                border: 1px solid #404040;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 122, 255, 0.2);
+                border: 1px solid #007AFF;
+            }
+        """
+        self.prev_btn.setStyleSheet(button_style)
+        self.next_btn.setStyleSheet(button_style)
+
+    def apply_light_theme(self):
+        """Apply light theme styling"""
+        self.setStyleSheet("""
+            SearchBar {
+                background-color: #f8f9fa;
+                border-bottom: 2px solid #dee2e6;
+            }
+        """)
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #ffffff;
+                color: #212529;
+                border: 1px solid #dee2e6;
+                border-radius: 16px;
+                padding: 6px 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #007AFF;
+            }
+        """)
+        self.results_label.setStyleSheet("color: #6c757d; font-size: 12px;")
+
+        # Update button styles for light theme
+        button_style = """
+            QPushButton {
+                border-radius: 16px;
+                background-color: transparent;
+                border: 1px solid #dee2e6;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 122, 255, 0.1);
+                border: 1px solid #007AFF;
+            }
+        """
+        self.prev_btn.setStyleSheet(button_style)
+        self.next_btn.setStyleSheet(button_style)
 
 
 class AnimatedSidebar(QFrame):

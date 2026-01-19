@@ -18,8 +18,9 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 
-from gui.widgets import MessageBubble, AnimatedSidebar
+from gui.widgets import MessageBubble, AnimatedSidebar, SearchBar
 from gui.dialogs import SettingsDialog, ModelDownloadDialog
+from gui.themes import LIGHT_THEME, DARK_THEME
 from workers.ollama_worker import OllamaWorker
 
 
@@ -52,6 +53,9 @@ class ChatbotGUI(QMainWindow):
         self.opacity_effect = None
         self.animation = None
         self.stop_btn = None
+        self.search_bar = None
+        self.search_matches = []
+        self.current_search_index = -1
 
         # Optimization variables
         self.current_message_bubble = None
@@ -63,11 +67,6 @@ class ChatbotGUI(QMainWindow):
             'system_prompt': "You are a helpful AI assistant.",
             'show_resources': False
         }
-
-        # Get current process for monitoring
-        self.current_process = psutil.Process(os.getpid())
-        # Prime the CPU measurement (first call establishes baseline)
-        self.current_process.cpu_percent()
 
         # Track Ollama processes for resource monitoring
         self.ollama_processes_tracked = {}
@@ -128,6 +127,16 @@ class ChatbotGUI(QMainWindow):
         content_layout.setContentsMargins(10, 10, 10, 10)
 
         self.setup_top_bar(content_layout)
+
+        # Add search bar
+        self.search_bar = SearchBar()
+        self.search_bar.setVisible(False)
+        self.search_bar.search_changed.connect(self.perform_search)
+        self.search_bar.next_requested.connect(self.search_next)
+        self.search_bar.previous_requested.connect(self.search_previous)
+        self.search_bar.close_requested.connect(self.clear_search)
+        content_layout.addWidget(self.search_bar)
+
         self.setup_chat_area(content_layout)
         self.setup_input_area(content_layout)
 
@@ -168,6 +177,15 @@ class ChatbotGUI(QMainWindow):
         self.ram_label.setStyleSheet("font-size: 12px; color: #6c757d; margin-left: 10px;")
         self.ram_label.setVisible(False)
 
+        # Search button
+        search_btn = QPushButton()
+        search_btn.setIcon(self.load_icon("search.svg"))
+        search_btn.setIconSize(QSize(20, 20))
+        search_btn.setFixedSize(45, 45)
+        search_btn.setObjectName("circularBtn")
+        search_btn.setToolTip("Search in Chat (Ctrl+F)")
+        search_btn.clicked.connect(self.toggle_search)
+
         settings_btn = QPushButton()
         settings_btn.setIcon(self.load_icon("settings.svg"))
         settings_btn.setIconSize(QSize(20, 20))
@@ -190,6 +208,7 @@ class ChatbotGUI(QMainWindow):
         top_bar.addWidget(self.cpu_label)
         top_bar.addWidget(self.ram_label)
         top_bar.addStretch()
+        top_bar.addWidget(search_btn)
         top_bar.addWidget(settings_btn)
         top_bar.addWidget(self.theme_btn)
 
@@ -347,7 +366,7 @@ class ChatbotGUI(QMainWindow):
         self.chat_list.itemDoubleClicked.connect(self.rename_session)
         layout.addWidget(self.chat_list)
 
-        hint_label = QLabel("💡 Right-click chats for options")
+        hint_label = QLabel("💡 Right-click or Delete key")
         hint_label.setStyleSheet("font-size: 11px; color: #6c757d; font-style: italic; padding: 5px;")
         hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(hint_label)
@@ -508,6 +527,79 @@ class ChatbotGUI(QMainWindow):
         # Store references to prevent garbage collection
         self.fade_out_anim = fade_out
         self.fade_in_anim = fade_in
+
+    def toggle_search(self):
+        """Toggle search bar visibility"""
+        if self.search_bar.is_visible:
+            self.search_bar.hide_animated()
+        else:
+            self.search_bar.show_animated()
+
+    def perform_search(self, search_text):
+        """Perform search and highlight matches"""
+        # Clear previous highlights
+        self.clear_search()
+
+        if not search_text.strip():
+            return
+
+        search_text = search_text.lower()
+        self.search_matches = []
+
+        # Search through all message bubbles
+        for i in range(self.chat_layout.count()):
+            widget = self.chat_layout.itemAt(i).widget()
+            if isinstance(widget, MessageBubble):
+                if search_text in widget.text_content.lower():
+                    widget.highlight_text(search_text)
+                    self.search_matches.append(widget)
+
+        # Update results
+        if self.search_matches:
+            self.current_search_index = 0
+            self.scroll_to_match(0)
+            self.search_bar.update_results_label(1, len(self.search_matches))
+        else:
+            self.current_search_index = -1
+            self.search_bar.update_results_label(0, 0)
+
+    def search_next(self):
+        """Navigate to next search result"""
+        if not self.search_matches:
+            return
+
+        self.current_search_index = (self.current_search_index + 1) % len(self.search_matches)
+        self.scroll_to_match(self.current_search_index)
+        self.search_bar.update_results_label(self.current_search_index + 1, len(self.search_matches))
+
+    def search_previous(self):
+        """Navigate to previous search result"""
+        if not self.search_matches:
+            return
+
+        self.current_search_index = (self.current_search_index - 1) % len(self.search_matches)
+        self.scroll_to_match(self.current_search_index)
+        self.search_bar.update_results_label(self.current_search_index + 1, len(self.search_matches))
+
+    def scroll_to_match(self, index):
+        """Scroll to the specified search match"""
+        if 0 <= index < len(self.search_matches):
+            widget = self.search_matches[index]
+            self.scroll.ensureWidgetVisible(widget, 50, 50)
+
+            # Highlight current match differently
+            for i, match in enumerate(self.search_matches):
+                match.set_current_match(i == index)
+
+    def clear_search(self):
+        """Clear search highlighting"""
+        for i in range(self.chat_layout.count()):
+            widget = self.chat_layout.itemAt(i).widget()
+            if isinstance(widget, MessageBubble):
+                widget.clear_highlight()
+
+        self.search_matches = []
+        self.current_search_index = -1
 
     def eventFilter(self, obj, event):
         """Handle events"""
@@ -701,8 +793,12 @@ class ChatbotGUI(QMainWindow):
         """Apply theme"""
         if self.dark_mode:
             self.setStyleSheet(DARK_THEME)
+            if self.search_bar:
+                self.search_bar.apply_dark_theme()
         else:
             self.setStyleSheet(LIGHT_THEME)
+            if self.search_bar:
+                self.search_bar.apply_light_theme()
 
     def load_models(self):
         """Load models"""
@@ -750,7 +846,7 @@ class ChatbotGUI(QMainWindow):
             return
 
         try:
-            # Number of logical CPU cores (for Task Manager–style normalization)
+            # Get number of logical CPU cores for normalization
             logical_cores = psutil.cpu_count(logical=True) or 1
 
             # Find all current ollama processes
@@ -763,12 +859,13 @@ class ChatbotGUI(QMainWindow):
                         pid = proc.info['pid']
                         current_ollama_pids.add(pid)
 
-                        # If this is a new process, prime its CPU measurement
+                        # If this is a new process, create Process object and prime CPU measurement
                         if pid not in self.ollama_processes_tracked:
-                            proc.cpu_percent()  # Prime (discard first reading)
+                            p = psutil.Process(pid)
+                            p.cpu_percent()  # Prime the measurement (discard first reading)
                             self.ollama_processes_tracked[pid] = {
-                                'process': proc,
-                                'first_measurement': True
+                                'process': p,
+                                'primed': False  # Skip first real reading after priming
                             }
 
                         ollama_processes.append(self.ollama_processes_tracked[pid])
@@ -782,7 +879,7 @@ class ChatbotGUI(QMainWindow):
                 del self.ollama_processes_tracked[pid]
 
             if ollama_processes:
-                total_cpu = 0.0
+                total_cpu_raw = 0.0
                 total_ram = 0.0
 
                 # Sum resources from all ollama processes
@@ -790,13 +887,15 @@ class ChatbotGUI(QMainWindow):
                     try:
                         proc = proc_data['process']
 
-                        # CPU: normalize to Task Manager style (0–100%)
-                        cpu = proc.cpu_percent(interval=None) / logical_cores
+                        # Get CPU percentage (psutil returns per-core usage)
+                        cpu = proc.cpu_percent(interval=None)
 
                         # Skip first real measurement after priming
-                        if proc_data['first_measurement']:
-                            proc_data['first_measurement'] = False
+                        if not proc_data['primed']:
+                            proc_data['primed'] = True
                             cpu = 0.0
+
+                        total_cpu_raw += cpu
 
                         # RAM: match Task Manager (Private Working Set on Windows)
                         if sys.platform == "win32":
@@ -806,11 +905,13 @@ class ChatbotGUI(QMainWindow):
                             mem_info = proc.memory_info()
                             ram = mem_info.rss / (1024 * 1024)
 
-                        total_cpu += cpu
                         total_ram += ram
 
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
+
+                # Normalize CPU to 0-100% range (divide by number of cores)
+                total_cpu = total_cpu_raw / logical_cores
 
                 # Update labels
                 self.cpu_label.setText(f"CPU: {total_cpu:.1f}%")
@@ -936,6 +1037,12 @@ class ChatbotGUI(QMainWindow):
 
             # Auto-save
             self.save_sessions()
+
+    def delete_session_with_key(self):
+        """Delete currently selected chat session with Delete key"""
+        current_item = self.chat_list.currentItem()
+        if current_item and self.current_session_index >= 0:
+            self.delete_session()
 
     def open_download_dialog(self):
         """Open download dialog"""
@@ -1190,6 +1297,7 @@ class ChatbotGUI(QMainWindow):
             self.chat_sessions = []
 
     def setup_shortcuts(self):
+        """Setup keyboard shortcuts"""
         toggle_sidebar_action = QAction(self)
         toggle_sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
         toggle_sidebar_action.triggered.connect(self.toggle_sidebar)
@@ -1220,132 +1328,14 @@ class ChatbotGUI(QMainWindow):
         settings_action.triggered.connect(self.open_settings)
         self.addAction(settings_action)
 
-LIGHT_THEME = """
-    QMainWindow, QWidget { background-color: #f8f9fa; color: #212529; }
-    QTextEdit { background-color: #ffffff; color: #212529; border: 1px solid #dee2e6; 
-                border-radius: 12px; padding: 8px; font-size: 14px; }
-    QPushButton { background-color: #007AFF; color: white; border: none; 
-                  border-radius: 15px; padding: 10px 15px; font-weight: bold; }
-    QPushButton:hover { background-color: #0056b3; }
-    QComboBox, QListWidget { background-color: #ffffff; border: 1px solid #dee2e6; 
-                            border-radius: 10px; padding: 8px; }
-    QListWidget::item { padding: 10px; border-radius: 10px; margin: 2px; }
-    QListWidget::item:selected { background-color: #007AFF; color: white; }
-    AnimatedSidebar { background-color: #ffffff; border-right: 1px solid #dee2e6; }
-    
-    /* Custom Scrollbar Styling - Light Theme */
-    QScrollBar:vertical {
-        background: #f8f9fa;
-        width: 12px;
-        border-radius: 6px;
-        margin: 0px;
-    }
-    QScrollBar::handle:vertical {
-        background: #c0c0c0;
-        min-height: 30px;
-        border-radius: 6px;
-        margin: 2px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background: #a0a0a0;
-    }
-    QScrollBar::handle:vertical:pressed {
-        background: #808080;
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0px;
-    }
-    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-        background: none;
-    }
-    
-    QScrollBar:horizontal {
-        background: #f8f9fa;
-        height: 12px;
-        border-radius: 6px;
-        margin: 0px;
-    }
-    QScrollBar::handle:horizontal {
-        background: #c0c0c0;
-        min-width: 30px;
-        border-radius: 6px;
-        margin: 2px;
-    }
-    QScrollBar::handle:horizontal:hover {
-        background: #a0a0a0;
-    }
-    QScrollBar::handle:horizontal:pressed {
-        background: #808080;
-    }
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-        width: 0px;
-    }
-    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-        background: none;
-    }
-"""
+        # Search shortcut
+        search_action = QAction(self)
+        search_action.setShortcut(QKeySequence("Ctrl+F"))
+        search_action.triggered.connect(self.toggle_search)
+        self.addAction(search_action)
 
-DARK_THEME = """
-    QMainWindow, QWidget { background-color: #1e1e1e; color: #ffffff; }
-    QTextEdit { background-color: #2d2d2d; color: #ffffff; border: 1px solid #404040; 
-                border-radius: 12px; padding: 8px; font-size: 14px; }
-    QPushButton { background-color: #007AFF; color: white; border: none; 
-                  border-radius: 15px; padding: 10px 15px; font-weight: bold; }
-    QPushButton:hover { background-color: #0056b3; }
-    QComboBox, QListWidget { background-color: #2d2d2d; color: #ffffff; border: 1px solid #404040; 
-                            border-radius: 10px; padding: 8px; }
-    QListWidget::item { padding: 10px; border-radius: 10px; margin: 2px; }
-    QListWidget::item:selected { background-color: #007AFF; }
-    AnimatedSidebar { background-color: #252525; border-right: 1px solid #404040; }
-    
-    /* Custom Scrollbar Styling - Dark Theme */
-    QScrollBar:vertical {
-        background: #1e1e1e;
-        width: 12px;
-        border-radius: 6px;
-        margin: 0px;
-    }
-    QScrollBar::handle:vertical {
-        background: #4a4a4a;
-        min-height: 30px;
-        border-radius: 6px;
-        margin: 2px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background: #5a5a5a;
-    }
-    QScrollBar::handle:vertical:pressed {
-        background: #6a6a6a;
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0px;
-    }
-    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-        background: none;
-    }
-    
-    QScrollBar:horizontal {
-        background: #1e1e1e;
-        height: 12px;
-        border-radius: 6px;
-        margin: 0px;
-    }
-    QScrollBar::handle:horizontal {
-        background: #4a4a4a;
-        min-width: 30px;
-        border-radius: 6px;
-        margin: 2px;
-    }
-    QScrollBar::handle:horizontal:hover {
-        background: #5a5a5a;
-    }
-    QScrollBar::handle:horizontal:pressed {
-        background: #6a6a6a;
-    }
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-        width: 0px;
-    }
-    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-        background: none;
-    }
-"""
+        # Delete chat session shortcut
+        delete_session_action = QAction(self)
+        delete_session_action.setShortcut(QKeySequence("Delete"))
+        delete_session_action.triggered.connect(self.delete_session_with_key)
+        self.addAction(delete_session_action)
