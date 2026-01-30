@@ -279,6 +279,50 @@ class ChatbotGUI(QMainWindow):
         else:
             self.scroll_bottom_btn.hide()
 
+    def fade_in_scroll_button(self):
+        """Fade in the scroll to bottom button"""
+        # Stop any existing animation
+        if self.scroll_btn_animation and self.scroll_btn_animation.state() == QPropertyAnimation.State.Running:
+            self.scroll_btn_animation.stop()
+
+        # Make sure button is visible (but may have 0 opacity)
+        if not self.scroll_bottom_btn.isVisible():
+            self.scroll_bottom_btn.show()
+            self.position_scroll_button()
+
+        # Create fade in animation
+        self.scroll_btn_animation = QPropertyAnimation(self.scroll_btn_opacity, b"opacity")
+        self.scroll_btn_animation.setDuration(300)
+        self.scroll_btn_animation.setStartValue(self.scroll_btn_opacity.opacity())
+        self.scroll_btn_animation.setEndValue(1.0)
+        self.scroll_btn_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.scroll_btn_animation.start()
+
+        print(f"Fade in started: {self.scroll_btn_opacity.opacity()} -> 1.0")  # Debug
+
+    def fade_out_scroll_button(self):
+        """Fade out the scroll to bottom button"""
+        # Stop any existing animation
+        if self.scroll_btn_animation and self.scroll_btn_animation.state() == QPropertyAnimation.State.Running:
+            self.scroll_btn_animation.stop()
+
+        # Create fade out animation
+        self.scroll_btn_animation = QPropertyAnimation(self.scroll_btn_opacity, b"opacity")
+        self.scroll_btn_animation.setDuration(300)
+        self.scroll_btn_animation.setStartValue(self.scroll_btn_opacity.opacity())
+        self.scroll_btn_animation.setEndValue(0.0)
+        self.scroll_btn_animation.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        # Hide button after animation completes
+        def on_fade_out_finished():
+            if self.scroll_btn_opacity.opacity() == 0.0:  # Only hide if fully faded
+                self.scroll_bottom_btn.hide()
+
+        self.scroll_btn_animation.finished.connect(on_fade_out_finished)
+        self.scroll_btn_animation.start()
+
+        print(f"Fade out started: {self.scroll_btn_opacity.opacity()} -> 0.0")  # Debug
+
     def position_scroll_button(self):
         """Position the scroll-to-bottom button in the bottom-right corner"""
         if hasattr(self, 'scroll') and hasattr(self, 'scroll_bottom_btn'):
@@ -705,18 +749,25 @@ class ChatbotGUI(QMainWindow):
         # Create bubble only once at the start
         if self.current_message_bubble is None:
             self.current_message_bubble = MessageBubble(self.current_response, False)
+            self.current_message_bubble.is_streaming = True  # Mark as streaming
             self.current_message_bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, self.current_message_bubble)
         else:
-            # Update existing bubble text
-            self.current_message_bubble.update_text(self.current_response)
+            # Update existing bubble text efficiently (only updates label text, no widget recreation)
+            self.current_message_bubble.update_text(self.current_response, is_streaming=True)
 
-        # Only scroll every 10 tokens to reduce overhead
-        if self.update_counter % 10 == 0:
+        # Only scroll every 20 tokens to reduce overhead even more
+        if self.update_counter % 20 == 0:
             QTimer.singleShot(50, self.scroll_to_bottom)
 
     def finish_response(self):
         """Finish response"""
+        # Mark streaming as complete
+        if self.current_message_bubble:
+            self.current_message_bubble.is_streaming = False
+            # Do a final update with is_streaming=False to allow proper formatting
+            self.current_message_bubble.update_text(self.current_response, is_streaming=False)
+
         # Reset the streaming bubble reference
         self.current_message_bubble = None
         self.update_counter = 0
@@ -754,7 +805,8 @@ class ChatbotGUI(QMainWindow):
 
                     # Update the bubble to show it was stopped
                     if self.current_message_bubble:
-                        self.current_message_bubble.update_text(self.current_response + "\n\n[Generation stopped by user]")
+                        self.current_message_bubble.is_streaming = False
+                        self.current_message_bubble.update_text(self.current_response + "\n\n[Generation stopped by user]", is_streaming=False)
 
                     # Update session
                     if self.current_session_index >= 0:

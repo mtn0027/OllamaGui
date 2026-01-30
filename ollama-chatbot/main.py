@@ -5,7 +5,7 @@ Run this file to start the application
 
 import sys
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from gui.main_window import ChatbotGUI
 
 

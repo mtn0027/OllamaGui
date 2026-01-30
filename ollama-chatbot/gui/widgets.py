@@ -192,6 +192,8 @@ class MessageBubble(QFrame):
         self.text_content = text
         self.search_text = None
         self.is_current_match = False
+        self.is_streaming = False  # Track if message is being streamed
+        self.streaming_label = None  # Reference to label during streaming
 
         # Get the icons directory path
         self.icons_dir = Path(__file__).parent.parent / "icons"
@@ -361,15 +363,24 @@ class MessageBubble(QFrame):
             layout.addWidget(self.content_container)
             layout.addStretch()
 
-    def update_text(self, new_text):
+    def update_text(self, new_text, is_streaming=True):
         """Update the message text efficiently without recreating widgets"""
         self.text_content = new_text
+        self.is_streaming = is_streaming
 
+        # If streaming, just update the text label without recreating widgets
+        if is_streaming and self.streaming_label is not None:
+            self.streaming_label.setText(new_text)
+            return
+
+        # If not streaming or first time, recreate widgets to parse code blocks
         # Clear existing content widgets
         while self.content_layout.count() > 0:
             item = self.content_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+
+        self.streaming_label = None  # Reset reference
 
         # Parse and add new content
         parts = self.parse_markdown_content(new_text)
@@ -406,6 +417,10 @@ class MessageBubble(QFrame):
                     """)
                 self.content_layout.addWidget(message)
 
+                # Store reference to first label for streaming updates
+                if self.streaming_label is None:
+                    self.streaming_label = message
+
             elif part[0] == 'code':
                 # Code block
                 code_widget = CodeBlockWidget(part[1], part[2])
@@ -414,6 +429,9 @@ class MessageBubble(QFrame):
 
     def highlight_text(self, search_text):
         """Highlight search text in the message"""
+        # Don't highlight while streaming to prevent glitches
+        if self.is_streaming:
+            return
         self.search_text = search_text.lower()
         self._apply_highlight(False)
 
@@ -578,7 +596,9 @@ class SearchBar(QWidget):
         layout.addWidget(self.next_btn)
 
         # Close button
-        close_btn = QPushButton("×")
+        close_btn = QPushButton()
+        close_btn.setIcon(self.load_icon("cross-mark.svg"))
+        close_btn.setIconSize(QSize(16, 16))
         close_btn.setFixedSize(32, 32)
         close_btn.setToolTip("Close (Esc)")
         close_btn.clicked.connect(self.hide_animated)
@@ -587,14 +607,10 @@ class SearchBar(QWidget):
                 border-radius: 16px;
                 background-color: transparent;
                 border: 1px solid #dee2e6;
-                font-size: 20px;
-                font-weight: bold;
-                color: #6c757d;
             }
             QPushButton:hover {
                 background-color: rgba(220, 53, 69, 0.1);
                 border: 1px solid #dc3545;
-                color: #dc3545;
             }
         """)
         layout.addWidget(close_btn)
