@@ -3,11 +3,25 @@ Custom widgets for the Ollama Chatbot GUI
 """
 
 import re
+from datetime import datetime
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QApplication,
-                             QVBoxLayout, QTextEdit, QWidget, QLineEdit)
+                             QVBoxLayout, QTextEdit, QWidget, QLineEdit, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont, QIcon, QSyntaxHighlighter, QTextCharFormat, QColor
 from pathlib import Path
+
+from gui.themes import (
+    BASE_FONT_FAMILY,
+    CODE_FONT_FAMILY,
+    LIGHT_TOKENS,
+    DARK_TOKENS,
+    FONT_SIZE_BODY,
+    FONT_SIZE_CAPTION,
+    RADIUS_MD,
+    RADIUS_LG,
+    SPACE_SM,
+    SPACE_MD,
+)
 
 
 class CodeSyntaxHighlighter(QSyntaxHighlighter):
@@ -186,7 +200,7 @@ class MessageBubble(QFrame):
 
     delete_requested = pyqtSignal(object)  # Signal to request deletion
 
-    def __init__(self, text, is_user, parent=None):
+    def __init__(self, text, is_user, timestamp=None, parent=None):
         super().__init__(parent)
         self.is_user = is_user
         self.text_content = text
@@ -194,6 +208,10 @@ class MessageBubble(QFrame):
         self.is_current_match = False
         self.is_streaming = False  # Track if message is being streamed
         self.streaming_label = None  # Reference to label during streaming
+        self.text_labels = []  # Store references to text labels with their content
+
+        # Store timestamp — auto-generate if not provided
+        self.timestamp_str = timestamp if timestamp else datetime.now().strftime("%H:%M")
 
         # Get the icons directory path
         self.icons_dir = Path(__file__).parent.parent / "icons"
@@ -243,6 +261,25 @@ class MessageBubble(QFrame):
 
         return parts
 
+    def _make_timestamp_label(self):
+        """Create a styled timestamp label"""
+        ts_label = QLabel(self.timestamp_str)
+        ts_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: rgba(108, 117, 125, 0.75);
+                font-size: 10px;
+                font-family: {BASE_FONT_FAMILY};
+                padding: 2px 4px 0px 4px;
+                background-color: transparent;
+            }}
+            """
+        )
+        ts_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight if self.is_user else Qt.AlignmentFlag.AlignLeft
+        )
+        return ts_label
+
     def setup_ui(self, text):
         """Initialize the message bubble UI"""
         layout = QHBoxLayout(self)
@@ -270,6 +307,9 @@ class MessageBubble(QFrame):
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(8)
 
+        # Clear text labels list
+        self.text_labels = []
+
         # Parse content for code blocks
         parts = self.parse_markdown_content(text)
 
@@ -282,34 +322,44 @@ class MessageBubble(QFrame):
                 message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
                 if self.is_user:
-                    message.setStyleSheet("""
-                        QLabel {
-                            background-color: #007AFF;
-                            color: white;
-                            border-radius: 15px;
-                            padding: 12px;
-                            font-size: 14px;
-                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
-                        }
-                    """)
+                    message.setStyleSheet(
+                        f"""
+                        QLabel {{
+                            background-color: {LIGHT_TOKENS['primary']};
+                            color: {LIGHT_TOKENS['text_inverse']};
+                            border-radius: {RADIUS_LG}px;
+                            padding: {SPACE_MD}px;
+                            font-size: {FONT_SIZE_BODY}px;
+                            font-family: {BASE_FONT_FAMILY};
+                        }}
+                        """
+                    )
                 else:
-                    message.setStyleSheet("""
-                        QLabel {
-                            background-color: #E9ECEF;
-                            color: #212529;
-                            border-radius: 15px;
-                            padding: 12px;
-                            font-size: 14px;
-                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
-                        }
-                    """)
+                    message.setStyleSheet(
+                        f"""
+                        QLabel {{
+                            background-color: {LIGHT_TOKENS['bg_surface_alt']};
+                            color: {LIGHT_TOKENS['text_primary']};
+                            border-radius: {RADIUS_LG}px;
+                            padding: {SPACE_MD}px;
+                            font-size: {FONT_SIZE_BODY}px;
+                            font-family: {BASE_FONT_FAMILY};
+                        }}
+                        """
+                    )
                 self.content_layout.addWidget(message)
+
+                # Store reference to text label with its content
+                self.text_labels.append({'widget': message, 'text': part[1]})
 
             elif part[0] == 'code':
                 # Code block - make it wider
                 code_widget = CodeBlockWidget(part[1], part[2])
                 code_widget.setMinimumWidth(600)  # Minimum width for code blocks
                 self.content_layout.addWidget(code_widget)
+
+        # Timestamp label — sits below all content parts
+        self.content_layout.addWidget(self._make_timestamp_label())
 
         # Copy button
         copy_btn = QPushButton()
@@ -371,6 +421,11 @@ class MessageBubble(QFrame):
         # If streaming, just update the text label without recreating widgets
         if is_streaming and self.streaming_label is not None:
             self.streaming_label.setText(new_text)
+            # Update the stored text for this label
+            for label_data in self.text_labels:
+                if label_data['widget'] == self.streaming_label:
+                    label_data['text'] = new_text
+                    break
             return
 
         # If not streaming or first time, recreate widgets to parse code blocks
@@ -381,6 +436,7 @@ class MessageBubble(QFrame):
                 item.widget().deleteLater()
 
         self.streaming_label = None  # Reset reference
+        self.text_labels = []  # Clear text labels list
 
         # Parse and add new content
         parts = self.parse_markdown_content(new_text)
@@ -394,28 +450,35 @@ class MessageBubble(QFrame):
                 message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
                 if self.is_user:
-                    message.setStyleSheet("""
-                        QLabel {
-                            background-color: #007AFF;
-                            color: white;
-                            border-radius: 15px;
-                            padding: 12px;
-                            font-size: 14px;
-                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
-                        }
-                    """)
+                    message.setStyleSheet(
+                        f"""
+                        QLabel {{
+                            background-color: {LIGHT_TOKENS['primary']};
+                            color: {LIGHT_TOKENS['text_inverse']};
+                            border-radius: {RADIUS_LG}px;
+                            padding: {SPACE_MD}px;
+                            font-size: {FONT_SIZE_BODY}px;
+                            font-family: {BASE_FONT_FAMILY};
+                        }}
+                        """
+                    )
                 else:
-                    message.setStyleSheet("""
-                        QLabel {
-                            background-color: #E9ECEF;
-                            color: #212529;
-                            border-radius: 15px;
-                            padding: 12px;
-                            font-size: 14px;
-                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
-                        }
-                    """)
+                    message.setStyleSheet(
+                        f"""
+                        QLabel {{
+                            background-color: {LIGHT_TOKENS['bg_surface_alt']};
+                            color: {LIGHT_TOKENS['text_primary']};
+                            border-radius: {RADIUS_LG}px;
+                            padding: {SPACE_MD}px;
+                            font-size: {FONT_SIZE_BODY}px;
+                            font-family: {BASE_FONT_FAMILY};
+                        }}
+                        """
+                    )
                 self.content_layout.addWidget(message)
+
+                # Store reference to text label with its content
+                self.text_labels.append({'widget': message, 'text': part[1]})
 
                 # Store reference to first label for streaming updates
                 if self.streaming_label is None:
@@ -427,8 +490,11 @@ class MessageBubble(QFrame):
                 code_widget.setMinimumWidth(600)
                 self.content_layout.addWidget(code_widget)
 
+        # Re-add timestamp label after rebuild
+        self.content_layout.addWidget(self._make_timestamp_label())
+
     def highlight_text(self, search_text):
-        """Highlight search text in the message"""
+        """Highlight search text in the message - only in text labels, not code blocks"""
         # Don't highlight while streaming to prevent glitches
         if self.is_streaming:
             return
@@ -446,54 +512,58 @@ class MessageBubble(QFrame):
         self.search_text = None
         self.is_current_match = False
 
-        # Reset all text widgets to original style
-        for i in range(self.content_layout.count()):
-            widget = self.content_layout.itemAt(i).widget()
-            if isinstance(widget, QLabel):
-                # Restore original styling
-                if self.is_user:
-                    widget.setStyleSheet("""
-                        QLabel {
-                            background-color: #007AFF;
-                            color: white;
-                            border-radius: 15px;
-                            padding: 12px;
-                            font-size: 14px;
-                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
-                        }
-                    """)
-                else:
-                    widget.setStyleSheet("""
-                        QLabel {
-                            background-color: #E9ECEF;
-                            color: #212529;
-                            border-radius: 15px;
-                            padding: 12px;
-                            font-size: 14px;
-                            font-family: 'Inter', 'Segoe UI', 'Arial', sans-serif;
-                        }
-                    """)
-                # Reset to plain text
-                widget.setTextFormat(Qt.TextFormat.PlainText)
-                widget.setText(widget.text())
+        # Reset only text labels to original style (not code blocks)
+        for label_data in self.text_labels:
+            widget = label_data['widget']
+            # Restore original styling
+            if self.is_user:
+                widget.setStyleSheet(
+                    f"""
+                    QLabel {{
+                        background-color: {LIGHT_TOKENS['primary']};
+                        color: {LIGHT_TOKENS['text_inverse']};
+                        border-radius: {RADIUS_LG}px;
+                        padding: {SPACE_MD}px;
+                        font-size: {FONT_SIZE_BODY}px;
+                        font-family: {BASE_FONT_FAMILY};
+                    }}
+                    """
+                )
+            else:
+                widget.setStyleSheet(
+                    f"""
+                    QLabel {{
+                        background-color: {LIGHT_TOKENS['bg_surface_alt']};
+                        color: {LIGHT_TOKENS['text_primary']};
+                        border-radius: {RADIUS_LG}px;
+                        padding: {SPACE_MD}px;
+                        font-size: {FONT_SIZE_BODY}px;
+                        font-family: {BASE_FONT_FAMILY};
+                    }}
+                    """
+                )
+            # Reset to plain text with stored original content
+            widget.setTextFormat(Qt.TextFormat.PlainText)
+            widget.setText(label_data['text'])
 
     def _apply_highlight(self, is_current):
-        """Apply highlighting to matching text"""
+        """Apply highlighting to matching text - only in text labels"""
         if not hasattr(self, 'search_text') or not self.search_text:
             return
 
         # Highlight color - orange for current match, yellow for others
         highlight_color = "#FFA500" if is_current else "#FFFF00"
 
-        for i in range(self.content_layout.count()):
-            widget = self.content_layout.itemAt(i).widget()
-            if isinstance(widget, QLabel):
-                # Get original text
-                original_text = self.text_content
+        # Only highlight text labels, not code blocks
+        for label_data in self.text_labels:
+            widget = label_data['widget']
+            text = label_data['text']
 
+            # Check if search text is in this label's text
+            if self.search_text in text.lower():
                 # Create highlighted HTML
                 highlighted_text = self._create_highlighted_html(
-                    original_text,
+                    text,
                     self.search_text,
                     highlight_color
                 )
@@ -542,6 +612,10 @@ class SearchBar(QWidget):
         self.icons_dir = Path(__file__).parent.parent / "icons"
         self.is_visible = False
         self.setup_ui()
+        # NOTE: Do NOT apply QGraphicsDropShadowEffect here.
+        # The parent central widget has a QGraphicsOpacityEffect and Qt cannot
+        # nest graphics effects — doing so causes child widgets (input, buttons)
+        # to render into a broken offscreen pixmap and appear invisible.
 
     def load_icon(self, icon_name):
         """Load an SVG icon from the icons directory"""
@@ -550,16 +624,32 @@ class SearchBar(QWidget):
             return QIcon(str(icon_path))
         return QIcon()
 
+    _BTN_STYLE = """
+        QPushButton {
+            background-color: transparent;
+            border: 1px solid #ced4da;
+            border-radius: 16px;
+            padding: 0px;
+        }
+        QPushButton:hover {
+            background-color: rgba(0, 122, 255, 0.12);
+            border-color: #007AFF;
+        }
+        QPushButton:disabled {
+            opacity: 0.4;
+        }
+    """
+
     def setup_ui(self):
         """Setup the search bar UI"""
-        self.setFixedHeight(0)  # Start hidden
-
+        # Height starts at 0 via setMaximumHeight(0) in show_animated;
+        # no fixed-height lock needed here (that would break child rendering).
         layout = QHBoxLayout(self)
         layout.setContentsMargins(15, 8, 15, 8)
         layout.setSpacing(10)
 
         # Search icon/label
-        search_label = QLabel("🔍")
+        search_label = QLabel("🔎")
         search_label.setStyleSheet("font-size: 16px;")
         layout.addWidget(search_label)
 
@@ -573,25 +663,26 @@ class SearchBar(QWidget):
 
         # Results counter
         self.results_label = QLabel("")
-        self.results_label.setStyleSheet("color: #6c757d; font-size: 12px;")
         self.results_label.setMinimumWidth(80)
         layout.addWidget(self.results_label)
 
-        # Previous button
+        # Previous button — explicit style so global theme doesn't override it
         self.prev_btn = QPushButton()
         self.prev_btn.setIcon(self.load_icon("up.svg"))
         self.prev_btn.setIconSize(QSize(16, 16))
         self.prev_btn.setFixedSize(32, 32)
         self.prev_btn.setToolTip("Previous (Shift+Enter)")
+        self.prev_btn.setStyleSheet(self._BTN_STYLE)
         self.prev_btn.clicked.connect(self.on_previous_clicked)
         layout.addWidget(self.prev_btn)
 
-        # Next button
+        # Next button — explicit style so global theme doesn't override it
         self.next_btn = QPushButton()
         self.next_btn.setIcon(self.load_icon("down.svg"))
         self.next_btn.setIconSize(QSize(16, 16))
         self.next_btn.setFixedSize(32, 32)
         self.next_btn.setToolTip("Next (Enter)")
+        self.next_btn.setStyleSheet(self._BTN_STYLE)
         self.next_btn.clicked.connect(self.on_next_clicked)
         layout.addWidget(self.next_btn)
 
@@ -601,18 +692,8 @@ class SearchBar(QWidget):
         close_btn.setIconSize(QSize(16, 16))
         close_btn.setFixedSize(32, 32)
         close_btn.setToolTip("Close (Esc)")
+        close_btn.setStyleSheet(self._BTN_STYLE)
         close_btn.clicked.connect(self.hide_animated)
-        close_btn.setStyleSheet("""
-            QPushButton {
-                border-radius: 16px;
-                background-color: transparent;
-                border: 1px solid #dee2e6;
-            }
-            QPushButton:hover {
-                background-color: rgba(220, 53, 69, 0.1);
-                border: 1px solid #dc3545;
-            }
-        """)
         layout.addWidget(close_btn)
 
         # Apply default light theme
@@ -624,14 +705,19 @@ class SearchBar(QWidget):
             return
 
         self.is_visible = True
+
+        # Clamp ceiling to 0 before revealing so the widget starts
+        # collapsed, then animate the ceiling up to the natural height.
+        # Resetting to QWIDGETSIZE_MAX lets the layout breathe freely.
+        self.setMaximumHeight(0)
         self.setVisible(True)
 
-        # Animation
         self.animation = QPropertyAnimation(self, b"maximumHeight")
         self.animation.setDuration(200)
         self.animation.setStartValue(0)
-        self.animation.setEndValue(50)
+        self.animation.setEndValue(52)
         self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation.finished.connect(lambda: self.setMaximumHeight(16777215))
         self.animation.start()
 
         # Focus the search input
@@ -645,13 +731,17 @@ class SearchBar(QWidget):
 
         self.is_visible = False
 
-        # Animation
         self.animation = QPropertyAnimation(self, b"maximumHeight")
         self.animation.setDuration(200)
-        self.animation.setStartValue(50)
+        self.animation.setStartValue(self.height())
         self.animation.setEndValue(0)
         self.animation.setEasingCurve(QEasingCurve.Type.InCubic)
-        self.animation.finished.connect(lambda: self.setVisible(False))
+
+        def _on_hidden():
+            self.setVisible(False)
+            self.setMaximumHeight(16777215)  # reset for next show
+
+        self.animation.finished.connect(_on_hidden)
         self.animation.start()
 
         # Clear search
@@ -692,77 +782,63 @@ class SearchBar(QWidget):
 
     def apply_dark_theme(self):
         """Apply dark theme styling"""
-        self.setStyleSheet("""
-            SearchBar {
-                background-color: #2d2d2d;
-                border-bottom: 2px solid #404040;
-            }
-        """)
-        self.search_input.setStyleSheet("""
-            QLineEdit {
-                background-color: #1e1e1e;
-                color: #ffffff;
-                border: 1px solid #404040;
+        tokens = DARK_TOKENS
+        self.setStyleSheet(
+            f"""
+            SearchBar {{
+                background-color: {tokens['bg_surface_alt']};
+                border-bottom: 2px solid {tokens['border_subtle']};
+            }}
+            """
+        )
+        self.search_input.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: {tokens['bg_input']};
+                color: {tokens['text_primary']};
+                border: 1px solid {tokens['border_subtle']};
                 border-radius: 16px;
-                padding: 6px 12px;
-            }
-            QLineEdit:focus {
-                border: 1px solid #007AFF;
-            }
-        """)
-        self.results_label.setStyleSheet("color: #a0a0a0; font-size: 12px;")
-
-        # Update button styles for dark theme
-        button_style = """
-            QPushButton {
-                border-radius: 16px;
-                background-color: transparent;
-                border: 1px solid #404040;
-            }
-            QPushButton:hover {
-                background-color: rgba(0, 122, 255, 0.2);
-                border: 1px solid #007AFF;
-            }
-        """
-        self.prev_btn.setStyleSheet(button_style)
-        self.next_btn.setStyleSheet(button_style)
+                padding: {SPACE_SM}px {SPACE_MD}px;
+                font-family: {BASE_FONT_FAMILY};
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {tokens['primary']};
+            }}
+            """
+        )
+        self.results_label.setStyleSheet(
+            f"color: {tokens['text_muted']}; font-size: {FONT_SIZE_CAPTION}px;"
+        )
 
     def apply_light_theme(self):
         """Apply light theme styling"""
-        self.setStyleSheet("""
-            SearchBar {
-                background-color: #f8f9fa;
-                border-bottom: 2px solid #dee2e6;
-            }
-        """)
-        self.search_input.setStyleSheet("""
-            QLineEdit {
-                background-color: #ffffff;
-                color: #212529;
-                border: 1px solid #dee2e6;
+        tokens = LIGHT_TOKENS
+        self.setStyleSheet(
+            f"""
+            SearchBar {{
+                background-color: {tokens['bg_surface_alt']};
+                border-bottom: 2px solid {tokens['border_subtle']};
+            }}
+            """
+        )
+        self.search_input.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: {tokens['bg_input']};
+                color: {tokens['text_primary']};
+                border: 1px solid {tokens['border_subtle']};
                 border-radius: 16px;
-                padding: 6px 12px;
-            }
-            QLineEdit:focus {
-                border: 1px solid #007AFF;
-            }
-        """)
-        self.results_label.setStyleSheet("color: #6c757d; font-size: 12px;")
-
-        # Update button styles for light theme
-        button_style = """
-            QPushButton {
-                border-radius: 16px;
-                background-color: transparent;
-                border: 1px solid #dee2e6;
-            }
-            QPushButton:hover {
-                background-color: rgba(0, 122, 255, 0.1);
-                border: 1px solid #007AFF;
-            }
-        """
-        self.prev_btn.setStyleSheet(button_style)
-        self.next_btn.setStyleSheet(button_style)
+                padding: {SPACE_SM}px {SPACE_MD}px;
+                font-family: {BASE_FONT_FAMILY};
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {tokens['primary']};
+            }}
+            """
+        )
+        self.results_label.setStyleSheet(
+            f"color: {tokens['text_muted']}; font-size: {FONT_SIZE_CAPTION}px;"
+        )
 
 
 class AnimatedSidebar(QFrame):

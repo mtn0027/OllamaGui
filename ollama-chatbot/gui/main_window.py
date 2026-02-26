@@ -7,6 +7,7 @@ import requests
 import subprocess
 import os
 import sys
+import atexit
 import psutil
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,7 @@ class ChatbotGUI(QMainWindow):
 
         # Optimization variables
         self.current_message_bubble = None
+        self.current_response_timestamp = ""
         self.update_counter = 0
 
         self.settings = {
@@ -154,51 +156,48 @@ class ChatbotGUI(QMainWindow):
         top_bar = QHBoxLayout()
 
         self.toggle_sidebar_btn = QPushButton()
+        self.toggle_sidebar_btn.setObjectName("circularBtn")
         self.toggle_sidebar_btn.setIcon(self.load_icon("menu.svg"))
         self.toggle_sidebar_btn.setIconSize(QSize(20, 20))
         self.toggle_sidebar_btn.setFixedSize(45, 45)
-        self.toggle_sidebar_btn.setObjectName("circularBtn")
         self.toggle_sidebar_btn.setToolTip("Toggle Sidebar (Ctrl+B)")
         self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
 
         self.model_label = QLabel("Model: None")
-        self.model_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-left: 10px;")
+        self.model_label.setObjectName("topBarModelLabel")
 
         # Resource usage labels (hidden by default)
         self.resource_separator = QLabel("|")
-        self.resource_separator.setStyleSheet("color: #6c757d; margin: 0 10px;")
         self.resource_separator.setVisible(False)
 
         self.cpu_label = QLabel("CPU: 0%")
-        self.cpu_label.setStyleSheet("font-size: 12px; color: #6c757d;")
         self.cpu_label.setVisible(False)
 
         self.ram_label = QLabel("RAM: 0 MB")
-        self.ram_label.setStyleSheet("font-size: 12px; color: #6c757d; margin-left: 10px;")
         self.ram_label.setVisible(False)
 
         # Search button
         search_btn = QPushButton()
+        search_btn.setObjectName("circularBtn")
         search_btn.setIcon(self.load_icon("search.svg"))
         search_btn.setIconSize(QSize(20, 20))
         search_btn.setFixedSize(45, 45)
-        search_btn.setObjectName("circularBtn")
         search_btn.setToolTip("Search in Chat (Ctrl+F)")
         search_btn.clicked.connect(self.toggle_search)
 
         settings_btn = QPushButton()
+        settings_btn.setObjectName("circularBtn")
         settings_btn.setIcon(self.load_icon("settings.svg"))
         settings_btn.setIconSize(QSize(20, 20))
         settings_btn.setFixedSize(45, 45)
-        settings_btn.setObjectName("circularBtn")
         settings_btn.setToolTip("Settings (Ctrl+,)")
         settings_btn.clicked.connect(self.open_settings)
 
         self.theme_btn = QPushButton()
+        self.theme_btn.setObjectName("circularBtn")
         self.theme_btn.setIcon(self.load_icon("moon.svg"))
         self.theme_btn.setIconSize(QSize(20, 20))
         self.theme_btn.setFixedSize(45, 45)
-        self.theme_btn.setObjectName("circularBtn")
         self.theme_btn.setToolTip("Toggle Dark/Light Theme (Ctrl+T)")
         self.theme_btn.clicked.connect(self.toggle_theme)
 
@@ -237,23 +236,11 @@ class ChatbotGUI(QMainWindow):
         # Scroll to bottom button (floating, positioned absolutely)
         self.scroll_bottom_btn = QPushButton("↓")
         self.scroll_bottom_btn.setParent(chat_wrapper)
+        self.scroll_bottom_btn.setObjectName("scrollBottomButton")
         self.scroll_bottom_btn.setFixedSize(50, 50)
         self.scroll_bottom_btn.setToolTip("Scroll to bottom")
         self.scroll_bottom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.scroll_bottom_btn.clicked.connect(self.scroll_to_bottom)
-        self.scroll_bottom_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #007AFF;
-                color: white;
-                border: 2px solid white;
-                border-radius: 25px;
-                font-size: 24px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #0056b3;
-            }
-        """)
         self.scroll_bottom_btn.raise_()  # Bring to front
         self.scroll_bottom_btn.hide()  # Hidden by default
 
@@ -340,41 +327,24 @@ class ChatbotGUI(QMainWindow):
         self.input_box = QTextEdit()
         self.input_box.setPlaceholderText("Type your message... (Enter to send, Shift+Enter for new line)")
         self.input_box.setMaximumHeight(100)
-        self.input_box.setStyleSheet("border-radius: 20px; padding: 12px; font-size: 14px;")
         self.input_box.installEventFilter(self)
 
         self.send_btn = QPushButton("Send  ")
+        self.send_btn.setObjectName("primaryButton")
         self.send_btn.setIcon(self.load_icon("send.svg"))
         self.send_btn.setIconSize(QSize(18, 18))
         self.send_btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)  # Icon on right
         self.send_btn.setFixedSize(100, 60)
-        self.send_btn.setStyleSheet("""
-            QPushButton {
-                border-radius: 20px;
-                font-size: 14px;
-                font-weight: bold;
-            }
-        """)
         self.send_btn.setToolTip("Send Message")
         self.send_btn.clicked.connect(self.send_message)
 
         # Stop button (hidden by default)
         self.stop_btn = QPushButton("Stop  ")
+        self.stop_btn.setObjectName("dangerButton")
         self.stop_btn.setIcon(self.load_icon("stop.svg"))
         self.stop_btn.setIconSize(QSize(18, 18))
         self.stop_btn.setLayoutDirection(Qt.LayoutDirection.RightToLeft)  # Icon on right
         self.stop_btn.setFixedSize(100, 60)
-        self.stop_btn.setStyleSheet("""
-            QPushButton {
-                border-radius: 20px;
-                font-size: 14px;
-                font-weight: bold;
-                background-color: #dc3545;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-        """)
         self.stop_btn.setToolTip("Stop Generation")
         self.stop_btn.clicked.connect(self.stop_generation)
         self.stop_btn.setVisible(False)
@@ -392,14 +362,14 @@ class ChatbotGUI(QMainWindow):
         layout.setSpacing(10)
 
         title = QLabel("💬 Chats")
-        title.setStyleSheet("font-size: 18px; font-weight: bold; padding: 5px;")
+        title.setObjectName("sidebarTitle")
         layout.addWidget(title)
 
         new_chat_btn = QPushButton("  New Chat")
+        new_chat_btn.setObjectName("primaryButton")
         new_chat_btn.setIcon(self.load_icon("plus.svg"))
         new_chat_btn.setIconSize(QSize(16, 16))
         new_chat_btn.clicked.connect(self.create_new_session)
-        new_chat_btn.setStyleSheet("padding: 12px; font-weight: bold; border-radius: 20px;")
         new_chat_btn.setToolTip("New Chat (Ctrl+N)")
         layout.addWidget(new_chat_btn)
 
@@ -411,7 +381,7 @@ class ChatbotGUI(QMainWindow):
         layout.addWidget(self.chat_list)
 
         hint_label = QLabel("💡 Right-click or Delete key")
-        hint_label.setStyleSheet("font-size: 11px; color: #6c757d; font-style: italic; padding: 5px;")
+        hint_label.setObjectName("sidebarHint")
         hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(hint_label)
 
@@ -420,11 +390,10 @@ class ChatbotGUI(QMainWindow):
         layout.addWidget(divider)
 
         model_label = QLabel("🤖 Model")
-        model_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(model_label)
 
         self.model_status_label = QLabel("")
-        self.model_status_label.setStyleSheet("font-size: 11px; color: #6c757d; font-style: italic;")
+        self.model_status_label.setObjectName("mutedLabel")
         self.model_status_label.setVisible(False)
         layout.addWidget(self.model_status_label)
 
@@ -434,14 +403,10 @@ class ChatbotGUI(QMainWindow):
         self.model_selector.currentTextChanged.connect(self.update_model_label)
 
         refresh_btn = QPushButton()
+        refresh_btn.setObjectName("ghostIconButton")
         refresh_btn.setIcon(self.load_icon("refresh.svg"))
         refresh_btn.setIconSize(QSize(20, 20))
         refresh_btn.setFixedSize(38, 38)
-        refresh_btn.setStyleSheet("""
-            QPushButton {
-                border-radius: 19px;
-            }
-        """)
         refresh_btn.setToolTip("Refresh Models List")
         refresh_btn.clicked.connect(self.load_models)
 
@@ -450,72 +415,44 @@ class ChatbotGUI(QMainWindow):
         layout.addLayout(model_layout)
 
         download_btn = QPushButton("  Download Model")
+        download_btn.setObjectName("primaryButton")
         download_btn.setIcon(self.load_icon("download.svg"))
         download_btn.setIconSize(QSize(16, 16))
-        download_btn.setStyleSheet("""
-            QPushButton {
-                padding: 10px 15px;
-                border-radius: 18px;
-                font-weight: bold;
-                font-size: 13px;
-                background-color: #28a745;
-            }
-            QPushButton:hover { background-color: #218838; }
-        """)
         download_btn.setToolTip("Download a New Model from Ollama")
         download_btn.clicked.connect(self.open_download_dialog)
         layout.addWidget(download_btn)
 
         delete_btn = QPushButton("  Delete Model")
+        delete_btn.setObjectName("dangerButton")
         delete_btn.setIcon(self.load_icon("trash.svg"))
         delete_btn.setIconSize(QSize(16, 16))
-        delete_btn.setStyleSheet("""
-            QPushButton {
-                padding: 10px 15px;
-                border-radius: 18px;
-                font-weight: bold;
-                font-size: 13px;
-                background-color: #dc3545;
-            }
-            QPushButton:hover { background-color: #c82333; }
-        """)
         delete_btn.setToolTip("Delete Selected Model")
         delete_btn.clicked.connect(self.delete_model)
         layout.addWidget(delete_btn)
 
         actions_label = QLabel("📁 Actions")
-        actions_label.setStyleSheet("font-weight: bold; margin-top: 10px; font-size: 13px;")
         layout.addWidget(actions_label)
 
-        action_style = """
-            QPushButton {
-                padding: 10px 15px;
-                border-radius: 18px;
-                text-align: left;
-                font-size: 13px;
-            }
-        """
-
         save_btn = QPushButton("  Save Chat")
+        save_btn.setObjectName("secondaryButton")
         save_btn.setIcon(self.load_icon("save.svg"))
         save_btn.setIconSize(QSize(16, 16))
-        save_btn.setStyleSheet(action_style)
         save_btn.setToolTip("Save Chat to File (Ctrl+S)")
         save_btn.clicked.connect(self.save_chat)
         layout.addWidget(save_btn)
 
         load_btn = QPushButton("  Load Chat")
+        load_btn.setObjectName("secondaryButton")
         load_btn.setIcon(self.load_icon("folder.svg"))
         load_btn.setIconSize(QSize(16, 16))
-        load_btn.setStyleSheet(action_style)
         load_btn.setToolTip("Load Chat from File (Ctrl+O)")
         load_btn.clicked.connect(self.load_chat)
         layout.addWidget(load_btn)
 
         clear_btn = QPushButton("  Clear Chat")
+        clear_btn.setObjectName("secondaryButton")
         clear_btn.setIcon(self.load_icon("trash.svg"))
         clear_btn.setIconSize(QSize(16, 16))
-        clear_btn.setStyleSheet(action_style)
         clear_btn.setToolTip("Clear Current Chat (Ctrl+K)")
         clear_btn.clicked.connect(self.clear_chat)
         layout.addWidget(clear_btn)
@@ -681,13 +618,20 @@ class ChatbotGUI(QMainWindow):
 
     def add_message(self, text, is_user):
         """Add message"""
-        bubble = MessageBubble(text, is_user)
+        # Generate timestamp at the moment the message is created
+        timestamp = datetime.now().strftime("%H:%M")
+
+        bubble = MessageBubble(text, is_user, timestamp=timestamp)
 
         # Connect delete signal for ALL messages (user and AI)
         bubble.delete_requested.connect(self.delete_message)
 
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
-        self.messages.append({"role": "user" if is_user else "assistant", "content": text})
+        self.messages.append({
+            "role": "user" if is_user else "assistant",
+            "content": text,
+            "timestamp": timestamp,
+        })
 
         if self.current_session_index >= 0:
             self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
@@ -748,7 +692,12 @@ class ChatbotGUI(QMainWindow):
 
         # Create bubble only once at the start
         if self.current_message_bubble is None:
-            self.current_message_bubble = MessageBubble(self.current_response, False)
+            # Capture the timestamp at the moment the AI starts responding
+            self.current_response_timestamp = datetime.now().strftime("%H:%M")
+            self.current_message_bubble = MessageBubble(
+                self.current_response, False,
+                timestamp=self.current_response_timestamp
+            )
             self.current_message_bubble.is_streaming = True  # Mark as streaming
             self.current_message_bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, self.current_message_bubble)
@@ -772,9 +721,13 @@ class ChatbotGUI(QMainWindow):
         self.current_message_bubble = None
         self.update_counter = 0
 
-        # Add to messages list
+        # Add to messages list — reuse the timestamp captured when streaming started
         if self.current_response and len(self.messages) > 0 and self.messages[-1]["role"] == "user":
-            self.messages.append({"role": "assistant", "content": self.current_response})
+            self.messages.append({
+                "role": "assistant",
+                "content": self.current_response,
+                "timestamp": self.current_response_timestamp,
+            })
 
             # Update session
             if self.current_session_index >= 0:
@@ -801,7 +754,11 @@ class ChatbotGUI(QMainWindow):
             # Add partial response if any
             if self.current_response:
                 if len(self.messages) > 0 and self.messages[-1]["role"] == "user":
-                    self.messages.append({"role": "assistant", "content": self.current_response + " [Stopped]"})
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": self.current_response + " [Stopped]",
+                        "timestamp": self.current_response_timestamp,
+                    })
 
                     # Update the bubble to show it was stopped
                     if self.current_message_bubble:
@@ -888,6 +845,7 @@ class ChatbotGUI(QMainWindow):
         self.model_label.setText(f"Model: {model if model else 'None'}")
         if self.current_session_index >= 0:
             self.chat_sessions[self.current_session_index]['model'] = model
+            self.save_sessions()
 
     def update_resource_display(self):
         """Update CPU and RAM usage display in top bar for Ollama server"""
@@ -1005,6 +963,7 @@ class ChatbotGUI(QMainWindow):
         item = QListWidgetItem(f"{session['name']}\n{timestamp}")
         self.chat_list.addItem(item)
         self.chat_list.setCurrentItem(item)
+        self.messages = []  # Reset message list so stale data from previous session doesn't bleed in
         self.clear_chat_display()
 
         # Auto-save
@@ -1024,7 +983,10 @@ class ChatbotGUI(QMainWindow):
         self.clear_chat_display()
         self.messages = session['messages'].copy()
         for msg in self.messages:
-            bubble = MessageBubble(msg['content'], msg['role'] == 'user')
+            # Restore the saved timestamp; fall back to empty string for old sessions
+            # that were saved before the timestamp field was introduced
+            saved_timestamp = msg.get('timestamp', '')
+            bubble = MessageBubble(msg['content'], msg['role'] == 'user', timestamp=saved_timestamp)
             bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
 
@@ -1164,7 +1126,9 @@ class ChatbotGUI(QMainWindow):
                         f.write(f"# Chat - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
                         for msg in self.messages:
                             role = "**You:**" if msg['role'] == 'user' else "**AI:**"
-                            f.write(f"{role}\n{msg['content']}\n\n---\n\n")
+                            ts = msg.get('timestamp', '')
+                            ts_suffix = f" _{ts}_" if ts else ""
+                            f.write(f"{role}{ts_suffix}\n{msg['content']}\n\n---\n\n")
                 QMessageBox.information(self, "Success", "Saved!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed: {e}")
@@ -1190,6 +1154,7 @@ class ChatbotGUI(QMainWindow):
                 self.chat_list.addItem(item)
                 self.chat_list.setCurrentItem(item)
                 self.load_session(item)
+                self.save_sessions()
 
                 QMessageBox.information(self, "Success", "Loaded!")
             except Exception as e:
@@ -1201,6 +1166,41 @@ class ChatbotGUI(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # Update resource display visibility immediately
             self.update_resource_display()
+
+    def _kill_process_tree(self, proc):
+        """Kill a process and all of its children using psutil (cross-platform)."""
+        try:
+            parent = psutil.Process(proc.pid)
+            children = parent.children(recursive=True)
+
+            # Send terminate to everyone first for a clean shutdown
+            for child in children:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.terminate()
+
+            # Give them up to 3 seconds to exit gracefully
+            _, still_alive = psutil.wait_procs(children + [parent], timeout=3)
+
+            # Force-kill anything that ignored the terminate signal
+            for p in still_alive:
+                try:
+                    p.kill()
+                except psutil.NoSuchProcess:
+                    pass
+
+            print("✓ Ollama process tree stopped")
+        except psutil.NoSuchProcess:
+            pass  # Already gone
+        except Exception as e:
+            print(f"Error killing Ollama process tree: {e}")
+            # Last resort: use the original subprocess handle
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         """Clean up"""
@@ -1216,19 +1216,12 @@ class ChatbotGUI(QMainWindow):
             self.worker.stop()
             self.worker.wait(1000)
 
-        # Stop Ollama server if we started it
+        # Stop Ollama server if we started it — kill the full process tree so
+        # child runner processes do not linger in Task Manager
         if self.ollama_process:
-            try:
-                print("Stopping Ollama server...")
-                self.ollama_process.terminate()
-                self.ollama_process.wait(timeout=5)
-                print("✓ Ollama server stopped")
-            except Exception as e:
-                print(f"Error stopping Ollama: {e}")
-                try:
-                    self.ollama_process.kill()
-                except:
-                    pass
+            print("Stopping Ollama server...")
+            self._kill_process_tree(self.ollama_process)
+            self.ollama_process = None
 
         event.accept()
 
@@ -1272,6 +1265,7 @@ class ChatbotGUI(QMainWindow):
                                 stderr=subprocess.DEVNULL,
                                 creationflags=subprocess.CREATE_NO_WINDOW
                             )
+                            atexit.register(self._kill_process_tree, self.ollama_process)
                             print("✓ Ollama started successfully")
                             return
                 except Exception as e:
@@ -1285,6 +1279,7 @@ class ChatbotGUI(QMainWindow):
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL
                     )
+                    atexit.register(self._kill_process_tree, self.ollama_process)
                     print("✓ Ollama started successfully")
                     return
                 except Exception as e:
@@ -1298,6 +1293,7 @@ class ChatbotGUI(QMainWindow):
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL
                     )
+                    atexit.register(self._kill_process_tree, self.ollama_process)
                     print("✓ Ollama started successfully")
                     return
                 except Exception as e:
