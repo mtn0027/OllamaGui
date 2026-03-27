@@ -32,64 +32,103 @@ RADIUS_LG = 16
 RADIUS_PILL = 999
 
 
-LIGHT_TOKENS = {
-    "bg_window": "#f8f9fa",
-    "bg_surface": "#ffffff",
-    "bg_surface_alt": "#f1f3f5",
-    "bg_sidebar": "#ffffff",
-    "bg_sidebar_border": "#dee2e6",
-    "bg_input": "#ffffff",
-    "bg_code": "#1e1e1e",
-    "bg_scrollbar": "#f8f9fa",
-    "bg_scrollbar_handle": "#c0c0c0",
-    "bg_scrollbar_handle_hover": "#a0a0a0",
-    "bg_scrollbar_handle_active": "#808080",
-    "text_primary": "#212529",
-    "text_muted": "#6c757d",
-    "text_inverse": "#ffffff",
-    "primary": "#007AFF",
-    "primary_hover": "#0056b3",
-    "primary_soft": "rgba(0, 122, 255, 0.08)",
-    "primary_soft_border": "rgba(0, 122, 255, 0.2)",
-    "success": "#28a745",
-    "success_hover": "#218838",
-    "danger": "#dc3545",
-    "danger_hover": "#c82333",
-    "border_subtle": "#dee2e6",
-    "border_muted": "#ced4da",
-    "border_strong": "#adb5bd",
-    "shadow_soft": "0 4px 12px rgba(15, 23, 42, 0.08)",
-}
+# -----------------------------------------------------------------------------
+# Accent color helpers
+# -----------------------------------------------------------------------------
+
+def _hex_to_rgb(hex_color: str) -> tuple:
+    """Convert a hex color string to an (r, g, b) tuple."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 3:
+        hex_color = ''.join(c * 2 for c in hex_color)
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return r, g, b
 
 
-DARK_TOKENS = {
-    "bg_window": "#1e1e1e",
-    "bg_surface": "#252525",
-    "bg_surface_alt": "#2d2d2d",
-    "bg_sidebar": "#252525",
-    "bg_sidebar_border": "#404040",
-    "bg_input": "#1e1e1e",
-    "bg_code": "#1e1e1e",
-    "bg_scrollbar": "#1e1e1e",
-    "bg_scrollbar_handle": "#4a4a4a",
-    "bg_scrollbar_handle_hover": "#5a5a5a",
-    "bg_scrollbar_handle_active": "#6a6a6a",
-    "text_primary": "#ffffff",
-    "text_muted": "#a0a0a0",
-    "text_inverse": "#000000",
-    "primary": "#4C9DFF",
-    "primary_hover": "#2F7AE5",
-    "primary_soft": "rgba(76, 157, 255, 0.16)",
-    "primary_soft_border": "rgba(76, 157, 255, 0.35)",
-    "success": "#3FCF8E",
-    "success_hover": "#31B77A",
-    "danger": "#f15b6c",
-    "danger_hover": "#d64759",
-    "border_subtle": "#404040",
-    "border_muted": "#3a3a3a",
-    "border_strong": "#2c2c2c",
-    "shadow_soft": "0 4px 18px rgba(0, 0, 0, 0.55)",
-}
+def _darken(hex_color: str, factor: float = 0.20) -> str:
+    """Return a darkened version of *hex_color* by reducing each channel by *factor*."""
+    r, g, b = _hex_to_rgb(hex_color)
+    r = max(0, int(r * (1 - factor)))
+    g = max(0, int(g * (1 - factor)))
+    b = max(0, int(b * (1 - factor)))
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _rgba(hex_color: str, opacity: float) -> str:
+    """Return an rgba() string for *hex_color* at the given *opacity* (0–1)."""
+    r, g, b = _hex_to_rgb(hex_color)
+    return f"rgba({r}, {g}, {b}, {opacity})"
+
+
+def _build_light_tokens(accent: str = "#007AFF") -> dict:
+    """Build and return the light-theme token dict for the given accent color."""
+    return {
+        "bg_window": "#f8f9fa",
+        "bg_surface": "#ffffff",
+        "bg_surface_alt": "#f1f3f5",
+        "bg_sidebar": "#ffffff",
+        "bg_sidebar_border": "#dee2e6",
+        "bg_input": "#ffffff",
+        "bg_code": "#1e1e1e",
+        "bg_scrollbar": "#f8f9fa",
+        "bg_scrollbar_handle": "#c0c0c0",
+        "bg_scrollbar_handle_hover": "#a0a0a0",
+        "bg_scrollbar_handle_active": "#808080",
+        "text_primary": "#212529",
+        "text_muted": "#6c757d",
+        "text_inverse": "#ffffff",
+        "primary": accent,
+        "primary_hover": _darken(accent, 0.20),
+        "primary_soft": _rgba(accent, 0.08),
+        "primary_soft_border": _rgba(accent, 0.20),
+        "success": "#28a745",
+        "success_hover": "#218838",
+        "danger": "#dc3545",
+        "danger_hover": "#c82333",
+        "border_subtle": "#dee2e6",
+        "border_muted": "#ced4da",
+        "border_strong": "#adb5bd",
+        "shadow_soft": "0 4px 12px rgba(15, 23, 42, 0.08)",
+    }
+
+
+def _build_dark_tokens(accent: str = "#007AFF") -> dict:
+    """Build and return the dark-theme token dict for the given accent color."""
+    return {
+        "bg_window": "#1e1e1e",
+        "bg_surface": "#252525",
+        "bg_surface_alt": "#2d2d2d",
+        "bg_sidebar": "#252525",
+        "bg_sidebar_border": "#404040",
+        "bg_input": "#1e1e1e",
+        "bg_code": "#1e1e1e",
+        "bg_scrollbar": "#1e1e1e",
+        "bg_scrollbar_handle": "#4a4a4a",
+        "bg_scrollbar_handle_hover": "#5a5a5a",
+        "bg_scrollbar_handle_active": "#6a6a6a",
+        "text_primary": "#ffffff",
+        "text_muted": "#a0a0a0",
+        "text_inverse": "#000000",
+        "primary": accent,
+        "primary_hover": _darken(accent, 0.20),
+        "primary_soft": _rgba(accent, 0.16),
+        "primary_soft_border": _rgba(accent, 0.35),
+        "success": "#3FCF8E",
+        "success_hover": "#31B77A",
+        "danger": "#f15b6c",
+        "danger_hover": "#d64759",
+        "border_subtle": "#404040",
+        "border_muted": "#3a3a3a",
+        "border_strong": "#2c2c2c",
+        "shadow_soft": "0 4px 18px rgba(0, 0, 0, 0.55)",
+    }
+
+
+# Module-level token dicts built with the default accent (kept for backwards compatibility)
+LIGHT_TOKENS = _build_light_tokens()
+DARK_TOKENS = _build_dark_tokens()
 
 
 def _build_common_app_styles(tokens: dict) -> str:
@@ -289,36 +328,46 @@ def _build_common_app_styles(tokens: dict) -> str:
     """
 
 
-def _build_light_theme() -> str:
-    """Return the full light theme style sheet."""
-    tokens = LIGHT_TOKENS
-    base = _build_common_app_styles(tokens)
-    return base
+# -----------------------------------------------------------------------------
+# Public builder functions
+# -----------------------------------------------------------------------------
+
+def build_light_theme(accent: str = "#007AFF") -> str:
+    """Return a complete light theme style sheet built around *accent*."""
+    tokens = _build_light_tokens(accent)
+    return _build_common_app_styles(tokens)
 
 
-def _build_dark_theme() -> str:
-    """Return the full dark theme style sheet."""
-    tokens = DARK_TOKENS
+def build_dark_theme(accent: str = "#007AFF") -> str:
+    """Return a complete dark theme style sheet built around *accent*.
+
+    Includes dark-specific overrides for the circular top-bar buttons so they
+    remain visible against the dark background.
+    """
+    tokens = _build_dark_tokens(accent)
     base = _build_common_app_styles(tokens)
 
     # Override circular top-bar buttons to be more visible against the dark background.
     # The shared style uses `transparent` which makes them hard to spot; a subtle
     # tinted surface and a lighter border fix this without breaking the design language.
-    dark_overrides = """
-    QPushButton#circularBtn {
+    dark_overrides = f"""
+    QPushButton#circularBtn {{
         background-color: rgba(255, 255, 255, 0.07);
         border: 1px solid #5a5a5a;
         border-radius: 22px;
-    }
-    QPushButton#circularBtn:hover {
-        background-color: rgba(76, 157, 255, 0.20);
-        border-color: #4C9DFF;
-    }
+    }}
+    QPushButton#circularBtn:hover {{
+        background-color: {_rgba(accent, 0.20)};
+        border-color: {accent};
+    }}
     """
 
     return base + dark_overrides
 
 
-# Final style sheet strings used by the app
-LIGHT_THEME = _build_light_theme()
-DARK_THEME = _build_dark_theme()
+# -----------------------------------------------------------------------------
+# Module-level constants (default accent) — kept for backwards compatibility
+# -----------------------------------------------------------------------------
+
+LIGHT_THEME = build_light_theme()
+DARK_THEME = build_dark_theme()

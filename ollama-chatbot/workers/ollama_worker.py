@@ -3,6 +3,7 @@ Background worker threads for Ollama API operations
 """
 
 import json
+import time
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -42,17 +43,72 @@ class OllamaWorker(QThread):
 
             response = requests.post(url, json=payload, stream=True)
 
+            # Flush strategy: emit a batch when ANY of these is true:
+            #   • 24 ms have elapsed since the last flush (~42 fps ceiling).
+            #     42 fps is imperceptible as lag but saves ~30 % of signal
+            #     emissions compared with 60 fps, since Qt repaints cannot
+            #     keep up with 60 fps anyway.
+            #   • buffer has ≥ 3 characters (minimum meaningful chunk).
+            #     3 rather than 8 so slow models don't stall visibly while
+            #     waiting for the buffer to fill.
+            #   • the buffer ends on a sentence boundary (`. `, `! `, `? `,
+            #     `\n`) and has ≥ 3 chars — prose then appears in semantic
+            #     units rather than at arbitrary timer ticks.
+            #   • the stream signals done=True.
+            FLUSH_INTERVAL = 0.024   # seconds (~42 fps)
+            MIN_BUFFER_SIZE = 3      # characters
+            SENTENCE_ENDS = (". ", "! ", "? ", "\n")
+
+            buffer = ""
+            last_flush = time.monotonic()
+
             for line in response.iter_lines():
                 if not self.is_running:
                     break
-                if line:
-                    data = json.loads(line)
-                    if "response" in data:
-                        self.token_received.emit(data["response"])
-                    if data.get("done", False):
-                        break
+
+                # iter_lines() can yield bytes on some requests versions or
+                # encodings — decode defensively before any string operation.
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                if not line:
+                    continue
+
+                data = json.loads(line)
+
+                if "response" in data:
+                    token = data["response"]
+                    # Guard against bytes leaking through the JSON deserialiser
+                    if isinstance(token, bytes):
+                        token = token.decode("utf-8", errors="replace")
+                    buffer += token
+
+                done = data.get("done", False)
+
+                # Evaluate all flush conditions
+                now = time.monotonic()
+                elapsed = now - last_flush
+                sentence_end = any(buffer.endswith(s) for s in SENTENCE_ENDS)
+
+                if buffer and len(buffer) >= MIN_BUFFER_SIZE and (
+                    elapsed >= FLUSH_INTERVAL
+                    or sentence_end
+                    or done
+                ):
+                    self.token_received.emit(buffer)
+                    buffer = ""
+                    last_flush = now
+
+                if done:
+                    break
+
+            # Flush any remaining content that didn't meet the flush threshold
+            if buffer:
+                self.token_received.emit(buffer)
 
             self.finished.emit()
+            # Exit the QThread event loop so the thread is immediately eligible
+            # for garbage collection rather than lingering in a stopped state.
+            self.quit()
 
         except Exception as e:
             self.error.emit(str(e))
@@ -85,19 +141,27 @@ class ModelDownloadWorker(QThread):
             for line in response.iter_lines():
                 if not self.is_running:
                     break
-                if line:
-                    data = json.loads(line)
-                    status = data.get("status", "")
 
-                    if "total" in data and "completed" in data:
-                        total = data["total"]
-                        completed = data["completed"]
-                        percent = (completed / total * 100) if total > 0 else 0
-                        self.progress.emit(f"{status}: {percent:.1f}%")
-                    else:
-                        self.progress.emit(status)
+                # Decode bytes defensively before string operations
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                if not line:
+                    continue
+
+                data = json.loads(line)
+                status = data.get("status", "")
+
+                if "total" in data and "completed" in data:
+                    total = data["total"]
+                    completed = data["completed"]
+                    percent = (completed / total * 100) if total > 0 else 0
+                    self.progress.emit(f"{status}: {percent:.1f}%")
+                else:
+                    self.progress.emit(status)
 
             self.finished.emit()
+            # Exit the QThread event loop cleanly after download completes
+            self.quit()
 
         except Exception as e:
             self.error.emit(str(e))

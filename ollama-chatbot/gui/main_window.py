@@ -19,9 +19,9 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 
-from gui.widgets import MessageBubble, AnimatedSidebar, SearchBar
+from gui.widgets import MessageBubble, AnimatedSidebar, SearchBar, DateSeparator
 from gui.dialogs import SettingsDialog, ModelDownloadDialog
-from gui.themes import LIGHT_THEME, DARK_THEME
+from gui.themes import LIGHT_THEME, DARK_THEME, build_light_theme, build_dark_theme, LIGHT_TOKENS, DARK_TOKENS
 from workers.ollama_worker import OllamaWorker
 
 
@@ -35,6 +35,7 @@ class ChatbotGUI(QMainWindow):
         self.data_dir = Path.home() / ".ollama_chatbot"
         self.data_dir.mkdir(exist_ok=True)
         self.sessions_file = self.data_dir / "chat_sessions.json"
+        self.settings_file = self.data_dir / "settings.json"
 
         # Icons directory
         self.icons_dir = Path(__file__).parent.parent / "icons"
@@ -58,20 +59,73 @@ class ChatbotGUI(QMainWindow):
         self.search_matches = []
         self.current_search_index = -1
 
-        # Optimization variables
+        # Sidebar chat search box (set in setup_sidebar, used in apply_theme)
+        self.sidebar_search_box = None
+
+        # Theme fade animation handles — kept as instance attributes to prevent
+        # garbage collection before the animations complete.
+        self._theme_fade_out = None
+        self._theme_fade_in = None
+
+        # Streaming state
         self.current_message_bubble = None
         self.current_response_timestamp = ""
-        self.update_counter = 0
+        self.current_response_date = ""
+        self._token_count = 0  # simple counter for diagnostics; no throttle logic
+
+        # Blinking cursor — only the bool is toggled by the timer;
+        # the actual setText() is issued by update_response() and _toggle_cursor().
+        self._cursor_visible = False
+        self._cursor_timer = QTimer()
+        self._cursor_timer.setInterval(500)
+        self._cursor_timer.timeout.connect(self._toggle_cursor)
+
+        # Dedicated auto-scroll timer: fires every 100 ms while streaming,
+        # scrolls only when the user is already near the bottom.
+        # Started on the first token in update_response(); stopped in finish_response().
+        self._scroll_timer = QTimer()
+        self._scroll_timer.setInterval(100)
+        self._scroll_timer.timeout.connect(self._auto_scroll_tick)
+
+        # Search debounce timer — search only runs 300 ms after the user
+        # stops typing, preventing per-keystroke regex + HTML re-render.
+        self._search_debounce_timer = QTimer()
+        self._search_debounce_timer.setSingleShot(True)
+        self._search_debounce_timer.setInterval(300)
+        self._pending_search_text = ""
+
+        # Session save debounce — avoids a synchronous disk write on every
+        # token.  Any code that previously called save_sessions() directly
+        # inside hot paths now calls _schedule_save() instead.
+        self._save_pending = False
+        self._save_timer = QTimer()
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(2000)
+        self._save_timer.timeout.connect(self._flush_save)
+
+        # Cached list of ollama psutil.Process objects.  Re-populated only
+        # when the cache is empty or a cached process has died, so the full
+        # process table walk runs at most once per change, not every second.
+        self._ollama_procs: list = []
 
         self.settings = {
             'temperature': 0.7,
             'max_tokens': 2000,
             'system_prompt': "You are a helpful AI assistant.",
-            'show_resources': False
+            'show_resources': False,
+            'dark_mode': False,
+            'accent_color': '#007AFF',
         }
 
-        # Track Ollama processes for resource monitoring
+        # Track Ollama processes for resource monitoring (legacy dict kept for
+        # priming state; the new _ollama_procs list drives the fast path).
         self.ollama_processes_tracked = {}
+
+        # Load persisted settings before building the UI
+        self.load_settings()
+
+        # Sync dark_mode shortcut from settings
+        self.dark_mode = self.settings.get('dark_mode', False)
 
         # Try to start Ollama
         self.start_ollama()
@@ -99,6 +153,33 @@ class ChatbotGUI(QMainWindow):
         self.resource_timer = QTimer()
         self.resource_timer.timeout.connect(self.update_resource_display)
         self.resource_timer.start(1000)  # Update every second
+
+    # ------------------------------------------------------------------
+    # Settings persistence
+    # ------------------------------------------------------------------
+
+    def load_settings(self):
+        """Load settings from ~/.ollama_chatbot/settings.json"""
+        try:
+            if self.settings_file.exists():
+                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                # Merge saved values into defaults so new keys are always present
+                self.settings.update(saved)
+                print(f"✓ Settings loaded from {self.settings_file}")
+            else:
+                print("No saved settings found — using defaults")
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+
+    def save_settings_to_disk(self):
+        """Persist the current settings dict to ~/.ollama_chatbot/settings.json"""
+        try:
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                json.dump(self.settings, f, indent=2, ensure_ascii=False)
+            print(f"✓ Settings saved to {self.settings_file}")
+        except Exception as e:
+            print(f"Error saving settings: {e}")
 
     def load_icon(self, icon_name):
         """Load an SVG icon from the icons directory"""
@@ -130,10 +211,13 @@ class ChatbotGUI(QMainWindow):
 
         self.setup_top_bar(content_layout)
 
-        # Add search bar
+        # Add search bar — connect to the debounce slot, not perform_search
         self.search_bar = SearchBar()
         self.search_bar.setVisible(False)
-        self.search_bar.search_changed.connect(self.perform_search)
+        self.search_bar.search_changed.connect(self._on_search_text_changed)
+        self._search_debounce_timer.timeout.connect(
+            lambda: self.perform_search(self._pending_search_text)
+        )
         self.search_bar.next_requested.connect(self.search_next)
         self.search_bar.previous_requested.connect(self.search_previous)
         self.search_bar.close_requested.connect(self.clear_search)
@@ -149,7 +233,9 @@ class ChatbotGUI(QMainWindow):
         central.setGraphicsEffect(self.opacity_effect)
         self.opacity_effect.setOpacity(1.0)
 
-        self.apply_theme()
+        # Apply theme directly on startup — no fade so the initial render
+        # doesn't flicker through an animation before the window is shown.
+        self._do_apply_theme()
 
     def setup_top_bar(self, parent_layout):
         """Setup the top bar"""
@@ -193,14 +279,6 @@ class ChatbotGUI(QMainWindow):
         settings_btn.setToolTip("Settings (Ctrl+,)")
         settings_btn.clicked.connect(self.open_settings)
 
-        self.theme_btn = QPushButton()
-        self.theme_btn.setObjectName("circularBtn")
-        self.theme_btn.setIcon(self.load_icon("moon.svg"))
-        self.theme_btn.setIconSize(QSize(20, 20))
-        self.theme_btn.setFixedSize(45, 45)
-        self.theme_btn.setToolTip("Toggle Dark/Light Theme (Ctrl+T)")
-        self.theme_btn.clicked.connect(self.toggle_theme)
-
         top_bar.addWidget(self.toggle_sidebar_btn)
         top_bar.addWidget(self.model_label)
         top_bar.addWidget(self.resource_separator)
@@ -209,7 +287,6 @@ class ChatbotGUI(QMainWindow):
         top_bar.addStretch()
         top_bar.addWidget(search_btn)
         top_bar.addWidget(settings_btn)
-        top_bar.addWidget(self.theme_btn)
 
         parent_layout.addLayout(top_bar)
 
@@ -244,15 +321,25 @@ class ChatbotGUI(QMainWindow):
         self.scroll_bottom_btn.raise_()  # Bring to front
         self.scroll_bottom_btn.hide()  # Hidden by default
 
-        # Connect scroll bar to check if we should show the button
-        self.scroll.verticalScrollBar().valueChanged.connect(self.check_scroll_position)
-
-        self.loading_label = QLabel("⏳ Thinking...")
-        self.loading_label.setVisible(False)
-        self.loading_label.setStyleSheet("color: #6c757d; font-style: italic;")
+        # Throttled scroll-position check: fires every 150 ms instead of on
+        # every pixel of smooth-scroll movement (valueChanged fires ~60 fps).
+        # The direct valueChanged connection is intentionally not made here.
+        self._scroll_check_timer = QTimer()
+        self._scroll_check_timer.setInterval(150)
+        self._scroll_check_timer.timeout.connect(self.check_scroll_position)
+        self._scroll_check_timer.start()
 
         parent_layout.addWidget(chat_wrapper)
-        parent_layout.addWidget(self.loading_label)
+
+    def _is_near_bottom(self) -> bool:
+        """Return True when the scroll bar is within 150 px of the maximum."""
+        sb = self.scroll.verticalScrollBar()
+        return sb.value() >= sb.maximum() - 150
+
+    def _auto_scroll_tick(self):
+        """Called every 100 ms while streaming; scrolls only when near the bottom."""
+        if self._is_near_bottom():
+            self.scroll_to_bottom()
 
     def check_scroll_position(self):
         """Check if user has scrolled up and show/hide scroll-to-bottom button"""
@@ -265,50 +352,6 @@ class ChatbotGUI(QMainWindow):
             self.position_scroll_button()
         else:
             self.scroll_bottom_btn.hide()
-
-    def fade_in_scroll_button(self):
-        """Fade in the scroll to bottom button"""
-        # Stop any existing animation
-        if self.scroll_btn_animation and self.scroll_btn_animation.state() == QPropertyAnimation.State.Running:
-            self.scroll_btn_animation.stop()
-
-        # Make sure button is visible (but may have 0 opacity)
-        if not self.scroll_bottom_btn.isVisible():
-            self.scroll_bottom_btn.show()
-            self.position_scroll_button()
-
-        # Create fade in animation
-        self.scroll_btn_animation = QPropertyAnimation(self.scroll_btn_opacity, b"opacity")
-        self.scroll_btn_animation.setDuration(300)
-        self.scroll_btn_animation.setStartValue(self.scroll_btn_opacity.opacity())
-        self.scroll_btn_animation.setEndValue(1.0)
-        self.scroll_btn_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.scroll_btn_animation.start()
-
-        print(f"Fade in started: {self.scroll_btn_opacity.opacity()} -> 1.0")  # Debug
-
-    def fade_out_scroll_button(self):
-        """Fade out the scroll to bottom button"""
-        # Stop any existing animation
-        if self.scroll_btn_animation and self.scroll_btn_animation.state() == QPropertyAnimation.State.Running:
-            self.scroll_btn_animation.stop()
-
-        # Create fade out animation
-        self.scroll_btn_animation = QPropertyAnimation(self.scroll_btn_opacity, b"opacity")
-        self.scroll_btn_animation.setDuration(300)
-        self.scroll_btn_animation.setStartValue(self.scroll_btn_opacity.opacity())
-        self.scroll_btn_animation.setEndValue(0.0)
-        self.scroll_btn_animation.setEasingCurve(QEasingCurve.Type.InCubic)
-
-        # Hide button after animation completes
-        def on_fade_out_finished():
-            if self.scroll_btn_opacity.opacity() == 0.0:  # Only hide if fully faded
-                self.scroll_bottom_btn.hide()
-
-        self.scroll_btn_animation.finished.connect(on_fade_out_finished)
-        self.scroll_btn_animation.start()
-
-        print(f"Fade out started: {self.scroll_btn_opacity.opacity()} -> 0.0")  # Debug
 
     def position_scroll_button(self):
         """Position the scroll-to-bottom button in the bottom-right corner"""
@@ -364,6 +407,14 @@ class ChatbotGUI(QMainWindow):
         title = QLabel("💬 Chats")
         title.setObjectName("sidebarTitle")
         layout.addWidget(title)
+
+        # Chat session search box
+        self.sidebar_search_box = QLineEdit()
+        self.sidebar_search_box.setObjectName("sidebarSearch")
+        self.sidebar_search_box.setPlaceholderText("Search chats…")
+        self.sidebar_search_box.setFixedHeight(32)
+        self.sidebar_search_box.textChanged.connect(self.filter_chat_list)
+        layout.addWidget(self.sidebar_search_box)
 
         new_chat_btn = QPushButton("  New Chat")
         new_chat_btn.setObjectName("primaryButton")
@@ -459,6 +510,15 @@ class ChatbotGUI(QMainWindow):
 
         layout.addStretch()
 
+    def filter_chat_list(self, text: str):
+        """Show only chat sessions whose name contains the search string (case-insensitive)."""
+        query = text.strip().lower()
+        for i, session in enumerate(self.chat_sessions):
+            item = self.chat_list.item(i)
+            if item is None:
+                continue
+            item.setHidden(bool(query) and query not in session.get('name', '').lower())
+
     def toggle_sidebar(self):
         """Toggle sidebar"""
         self.sidebar_open = not self.sidebar_open
@@ -477,44 +537,26 @@ class ChatbotGUI(QMainWindow):
 
         self.animation.start()
 
-    def toggle_theme(self):
-        """Toggle theme"""
-        # Fade out
-        fade_out = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade_out.setDuration(200)
-        fade_out.setStartValue(1.0)
-        fade_out.setEndValue(0.3)
-        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        # Fade in
-        fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
-        fade_in.setDuration(200)
-        fade_in.setStartValue(0.3)
-        fade_in.setEndValue(1.0)
-        fade_in.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        def change_theme():
-            self.dark_mode = not self.dark_mode
-            if self.dark_mode:
-                self.theme_btn.setIcon(self.load_icon("sun.svg"))
-            else:
-                self.theme_btn.setIcon(self.load_icon("moon.svg"))
-            self.apply_theme()
-            fade_in.start()
-
-        fade_out.finished.connect(change_theme)
-        fade_out.start()
-
-        # Store references to prevent garbage collection
-        self.fade_out_anim = fade_out
-        self.fade_in_anim = fade_in
-
     def toggle_search(self):
         """Toggle search bar visibility"""
         if self.search_bar.is_visible:
             self.search_bar.hide_animated()
         else:
             self.search_bar.show_animated()
+
+    # ------------------------------------------------------------------
+    # Search helpers
+    # ------------------------------------------------------------------
+
+    def _on_search_text_changed(self, text: str):
+        """Buffer the latest search text and restart the 300 ms debounce timer.
+
+        This slot is connected to search_bar.search_changed instead of
+        perform_search directly, so the expensive bubble-iteration + regex +
+        HTML re-render only runs once per pause in typing, not on every key.
+        """
+        self._pending_search_text = text
+        self._search_debounce_timer.start()  # restart resets the 300 ms window
 
     def perform_search(self, search_text):
         """Perform search and highlight matches"""
@@ -601,7 +643,6 @@ class ChatbotGUI(QMainWindow):
         self.input_box.setEnabled(False)
         self.send_btn.setVisible(False)
         self.stop_btn.setVisible(True)
-        self.loading_label.setVisible(True)
 
         self.current_response = ""
         self.worker = OllamaWorker(
@@ -616,10 +657,216 @@ class ChatbotGUI(QMainWindow):
         self.worker.error.connect(self.handle_error)
         self.worker.start()
 
+    # ------------------------------------------------------------------
+    # Blinking cursor helpers
+    # ------------------------------------------------------------------
+
+    def _toggle_cursor(self):
+        """500 ms timer slot — toggles the cursor bool and pushes one setText().
+
+        The cursor blink is completely decoupled from the token stream.
+        This fires at most twice per second and always calls stream_text()
+        on the bubble, which is a single QLabel.setText() call.
+        """
+        self._cursor_visible = not self._cursor_visible
+        if self.current_message_bubble is not None:
+            display_text = self.current_response
+            if self._cursor_visible:
+                display_text += "▋"
+            self.current_message_bubble.stream_text(display_text)
+
+    def _start_cursor(self):
+        """Start the 500 ms blinking cursor timer."""
+        self._cursor_visible = True
+        self._cursor_timer.start()
+
+    def _stop_cursor(self):
+        """Stop the blinking cursor and reset the visible flag."""
+        self._cursor_timer.stop()
+        self._cursor_visible = False
+
+    # ------------------------------------------------------------------
+    # Theme helpers
+    # ------------------------------------------------------------------
+
+    def _do_apply_theme(self):
+        """Apply the current theme immediately, with no animation.
+
+        Contains the full stylesheet-swap and child-widget re-theming logic.
+        Called directly on startup and session load to avoid flickering.
+        The opacity is always reset to 1.0 first so a stranded animation
+        can never leave the UI partially transparent.
+        """
+        # Guard: restore full opacity in case a previous animation was
+        # interrupted and left the effect at a value below 1.0.
+        if self.opacity_effect is not None:
+            self.opacity_effect.setOpacity(1.0)
+
+        accent = self.settings.get('accent_color', '#007AFF')
+        if self.dark_mode:
+            self.setStyleSheet(build_dark_theme(accent))
+            tokens = DARK_TOKENS
+        else:
+            self.setStyleSheet(build_light_theme(accent))
+            tokens = LIGHT_TOKENS
+
+        if self.search_bar:
+            if self.dark_mode:
+                self.search_bar.apply_dark_theme()
+            else:
+                self.search_bar.apply_light_theme()
+
+        # Style the sidebar search box with the correct token colors
+        if self.sidebar_search_box is not None:
+            self.sidebar_search_box.setStyleSheet(
+                f"""
+                QLineEdit#sidebarSearch {{
+                    background-color: {tokens['bg_input']};
+                    color: {tokens['text_primary']};
+                    border: 1px solid {tokens['border_subtle']};
+                    border-radius: 8px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                }}
+                QLineEdit#sidebarSearch:focus {{
+                    border: 1px solid {tokens['primary']};
+                    background-color: {tokens['bg_surface']};
+                }}
+                QLineEdit#sidebarSearch::placeholder {{
+                    color: {tokens['text_muted']};
+                }}
+                """
+            )
+
+        # Re-theme any DateSeparator widgets already in the chat layout
+        if hasattr(self, 'chat_layout'):
+            for i in range(self.chat_layout.count()):
+                widget = self.chat_layout.itemAt(i).widget()
+                if isinstance(widget, DateSeparator):
+                    if self.dark_mode:
+                        widget.apply_dark_theme()
+                    else:
+                        widget.apply_light_theme()
+
+    def _animate_theme_change(self, callback):
+        """Fade opacity 1.0 → 0.85, swap the theme, then fade back to 1.0.
+
+        Both animation objects are stored as instance attributes so Python's
+        garbage collector cannot destroy them before they finish.  Any
+        animation already in progress is stopped before new ones are created
+        to prevent two animations fighting over the same opacity_effect.
+        """
+        if self.opacity_effect is None:
+            # Fallback: no effect attached yet, apply immediately
+            callback()
+            return
+
+        # Stop any in-progress fade to avoid concurrent animation conflicts
+        if (self._theme_fade_out is not None and
+                self._theme_fade_out.state() == QPropertyAnimation.State.Running):
+            self._theme_fade_out.stop()
+        if (self._theme_fade_in is not None and
+                self._theme_fade_in.state() == QPropertyAnimation.State.Running):
+            self._theme_fade_in.stop()
+
+        # Fade out: 1.0 → 0.85 over 120 ms
+        self._theme_fade_out = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self._theme_fade_out.setDuration(120)
+        self._theme_fade_out.setStartValue(1.0)
+        self._theme_fade_out.setEndValue(0.85)
+        self._theme_fade_out.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _on_fade_out_finished():
+            # Apply the actual theme change at the darkest point
+            callback()
+
+            # Fade back in: 0.85 → 1.0 over 120 ms
+            self._theme_fade_in = QPropertyAnimation(self.opacity_effect, b"opacity")
+            self._theme_fade_in.setDuration(120)
+            self._theme_fade_in.setStartValue(0.85)
+            self._theme_fade_in.setEndValue(1.0)
+            self._theme_fade_in.setEasingCurve(QEasingCurve.Type.InCubic)
+            self._theme_fade_in.start()
+
+        self._theme_fade_out.finished.connect(_on_fade_out_finished)
+        self._theme_fade_out.start()
+
+    def apply_theme(self):
+        """Apply the current theme with a smooth opacity fade.
+
+        Call this when the user explicitly changes the theme (settings dialog,
+        keyboard shortcut). For silent startup rendering use _do_apply_theme()
+        directly to avoid an unnecessary animation before the window is shown.
+        """
+        self._animate_theme_change(self._do_apply_theme)
+
+    # ------------------------------------------------------------------
+    # Date separator helpers
+    # ------------------------------------------------------------------
+
+    def _format_date_label(self, iso_date: str) -> str:
+        """Convert an ISO date string (YYYY-MM-DD) to a human-readable label."""
+        try:
+            d = datetime.strptime(iso_date, "%Y-%m-%d").date()
+            today = datetime.now().date()
+            if d == today:
+                return "Today"
+            if (today - d).days == 1:
+                return "Yesterday"
+            return d.strftime("%A, %d %B %Y")
+        except Exception:
+            return iso_date
+
+    def _insert_date_separator(self, iso_date: str):
+        """Insert a DateSeparator widget at the current end of chat_layout."""
+        label = self._format_date_label(iso_date)
+        sep = DateSeparator(label)
+        if self.dark_mode:
+            sep.apply_dark_theme()
+        else:
+            sep.apply_light_theme()
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, sep)
+
+    def _last_message_date(self) -> str:
+        """Return the ISO date string of the last message, or '' if none."""
+        for msg in reversed(self.messages):
+            if msg.get('date'):
+                return msg['date']
+        return ''
+
+    # ------------------------------------------------------------------
+    # Session save helpers
+    # ------------------------------------------------------------------
+
+    def _schedule_save(self):
+        """Mark a save as pending and (re)start the 2-second debounce timer.
+
+        Calling this instead of save_sessions() directly prevents a
+        synchronous disk write on every message / token in the hot path.
+        The timer is restarted on each call so rapid changes coalesce into
+        a single write that happens 2 s after the last change.
+        """
+        self._save_pending = True
+        self._save_timer.start()  # restart resets the 2 s window
+
+    def _flush_save(self):
+        """Timer callback: write sessions to disk and clear the pending flag."""
+        if self._save_pending:
+            self.save_sessions()
+            self._save_pending = False
+
+    # ------------------------------------------------------------------
+
     def add_message(self, text, is_user):
         """Add message"""
-        # Generate timestamp at the moment the message is created
-        timestamp = datetime.now().strftime("%H:%M")
+        now = datetime.now()
+        timestamp = now.strftime("%H:%M")
+        iso_date = now.strftime("%Y-%m-%d")
+
+        # Insert a date separator when the day changes (or for the first message)
+        last_date = self._last_message_date()
+        if iso_date != last_date:
+            self._insert_date_separator(iso_date)
 
         bubble = MessageBubble(text, is_user, timestamp=timestamp)
 
@@ -631,6 +878,7 @@ class ChatbotGUI(QMainWindow):
             "role": "user" if is_user else "assistant",
             "content": text,
             "timestamp": timestamp,
+            "date": iso_date,
         })
 
         if self.current_session_index >= 0:
@@ -642,8 +890,8 @@ class ChatbotGUI(QMainWindow):
                 if item:
                     item.setText(f"{preview}\n{self.chat_sessions[self.current_session_index]['timestamp']}")
 
-            # Auto-save after adding message
-            self.save_sessions()
+            # Debounced save — avoids a synchronous disk write per message
+            self._schedule_save()
 
         QTimer.singleShot(100, self.scroll_to_bottom)
 
@@ -686,63 +934,68 @@ class ChatbotGUI(QMainWindow):
                     break
 
     def update_response(self, token):
-        """Update response efficiently"""
-        self.current_response += token
-        self.update_counter += 1
+        """Append token and push the updated text to the streaming bubble.
 
-        # Create bubble only once at the start
+        Single responsibility: accumulate text, call stream_text(), count.
+        No scroll logic, no QTimer calls, no markdown detection, no throttle.
+        Bubble creation and timer start happen exactly once on the first token.
+        """
+        self.current_response += token
+        self._token_count += 1
+
         if self.current_message_bubble is None:
-            # Capture the timestamp at the moment the AI starts responding
-            self.current_response_timestamp = datetime.now().strftime("%H:%M")
+            # First token — create the bubble and start support timers
+            now = datetime.now()
+            self.current_response_timestamp = now.strftime("%H:%M")
+            self.current_response_date = now.strftime("%Y-%m-%d")
             self.current_message_bubble = MessageBubble(
-                self.current_response, False,
-                timestamp=self.current_response_timestamp
+                "", False,
+                timestamp=self.current_response_timestamp,
+                is_streaming=True,
             )
-            self.current_message_bubble.is_streaming = True  # Mark as streaming
             self.current_message_bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, self.current_message_bubble)
-        else:
-            # Update existing bubble text efficiently (only updates label text, no widget recreation)
-            self.current_message_bubble.update_text(self.current_response, is_streaming=True)
+            self._start_cursor()
+            self._scroll_timer.start()
 
-        # Only scroll every 20 tokens to reduce overhead even more
-        if self.update_counter % 20 == 0:
-            QTimer.singleShot(50, self.scroll_to_bottom)
+        display_text = self.current_response + ("▋" if self._cursor_visible else "")
+        self.current_message_bubble.stream_text(display_text)
 
     def finish_response(self):
-        """Finish response"""
-        # Mark streaming as complete
-        if self.current_message_bubble:
-            self.current_message_bubble.is_streaming = False
-            # Do a final update with is_streaming=False to allow proper formatting
-            self.current_message_bubble.update_text(self.current_response, is_streaming=False)
+        """Finalize the streamed response: run the full markdown parse once."""
+        # Stop cursor and scroll timers
+        self._stop_cursor()
+        self._scroll_timer.stop()
 
-        # Reset the streaming bubble reference
+        if self.current_message_bubble is not None:
+            # Replace the streaming label with fully-rendered markdown content
+            self.current_message_bubble.finalize_streaming(self.current_response)
+
+        # Reset streaming state
+        bubble = self.current_message_bubble
         self.current_message_bubble = None
-        self.update_counter = 0
+        self._token_count = 0
 
-        # Add to messages list — reuse the timestamp captured when streaming started
+        # Persist the completed assistant message
         if self.current_response and len(self.messages) > 0 and self.messages[-1]["role"] == "user":
             self.messages.append({
                 "role": "assistant",
                 "content": self.current_response,
                 "timestamp": self.current_response_timestamp,
+                "date": self.current_response_date,
             })
 
-            # Update session
             if self.current_session_index >= 0:
                 self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
-                # Auto-save
-                self.save_sessions()
+                self._schedule_save()
 
         self.current_response = ""
         self.input_box.setEnabled(True)
         self.send_btn.setVisible(True)
         self.stop_btn.setVisible(False)
-        self.loading_label.setVisible(False)
         self.input_box.setFocus()
 
-        # Final scroll to bottom
+        # One final scroll to show the complete response
         self.scroll_to_bottom()
 
     def stop_generation(self):
@@ -751,63 +1004,53 @@ class ChatbotGUI(QMainWindow):
             self.worker.stop()
             self.worker.wait()
 
-            # Add partial response if any
-            if self.current_response:
+            # Stop cursor and scroll timers
+            self._stop_cursor()
+            self._scroll_timer.stop()
+
+            # Finalize whatever was generated so far
+            if self.current_response and self.current_message_bubble is not None:
+                stopped_text = self.current_response + "\n\n[Generation stopped by user]"
+                self.current_message_bubble.finalize_streaming(stopped_text)
+
                 if len(self.messages) > 0 and self.messages[-1]["role"] == "user":
                     self.messages.append({
                         "role": "assistant",
                         "content": self.current_response + " [Stopped]",
                         "timestamp": self.current_response_timestamp,
+                        "date": self.current_response_date,
                     })
 
-                    # Update the bubble to show it was stopped
-                    if self.current_message_bubble:
-                        self.current_message_bubble.is_streaming = False
-                        self.current_message_bubble.update_text(self.current_response + "\n\n[Generation stopped by user]", is_streaming=False)
-
-                    # Update session
                     if self.current_session_index >= 0:
                         self.chat_sessions[self.current_session_index]['messages'] = self.messages.copy()
-                        # Auto-save
                         self.save_sessions()
 
             # Reset streaming state
             self.current_message_bubble = None
-            self.update_counter = 0
+            self._token_count = 0
             self.current_response = ""
             self.input_box.setEnabled(True)
             self.send_btn.setVisible(True)
             self.stop_btn.setVisible(False)
-            self.loading_label.setVisible(False)
-            self.loading_label.setText("⏹ Generation stopped")
-            QTimer.singleShot(2000, lambda: self.loading_label.setText("⏳ Thinking..."))
             self.input_box.setFocus()
 
     def handle_error(self, error):
         """Handle error"""
+        self._stop_cursor()
+        self._scroll_timer.stop()
         QMessageBox.critical(self, "Error", f"Failed: {error}")
         self.current_response = ""
+        self.current_message_bubble = None
+        self._token_count = 0
         self.input_box.setEnabled(True)
         self.send_btn.setVisible(True)
         self.stop_btn.setVisible(False)
-        self.loading_label.setVisible(False)
         self.input_box.setFocus()
 
     def scroll_to_bottom(self):
         """Scroll to bottom"""
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
         self.scroll_bottom_btn.hide()  # Hide button after scrolling
-
-    def apply_theme(self):
-        """Apply theme"""
-        if self.dark_mode:
-            self.setStyleSheet(DARK_THEME)
-            if self.search_bar:
-                self.search_bar.apply_dark_theme()
-        else:
-            self.setStyleSheet(LIGHT_THEME)
-            if self.search_bar:
-                self.search_bar.apply_light_theme()
 
     def load_models(self):
         """Load models"""
@@ -848,7 +1091,12 @@ class ChatbotGUI(QMainWindow):
             self.save_sessions()
 
     def update_resource_display(self):
-        """Update CPU and RAM usage display in top bar for Ollama server"""
+        """Update CPU and RAM usage display in top bar for Ollama server.
+
+        Uses a cached list of psutil.Process objects (_ollama_procs) so the
+        full process-table walk (psutil.process_iter) only runs when the cache
+        is empty or a previously found process has died.
+        """
         if not self.settings.get('show_resources', False):
             self.resource_separator.setVisible(False)
             self.cpu_label.setVisible(False)
@@ -856,37 +1104,43 @@ class ChatbotGUI(QMainWindow):
             return
 
         try:
-            # Get number of logical CPU cores for normalization
             logical_cores = psutil.cpu_count(logical=True) or 1
 
-            # Find all current ollama processes
-            current_ollama_pids = set()
-            ollama_processes = []
+            # ── Cache validity check ──────────────────────────────────
+            # Keep the cached list if every entry is still running.
+            # Re-scan the full process table only on first call or after a
+            # process death, which happens at most once per Ollama restart.
+            cache_valid = bool(self._ollama_procs) and all(
+                p['process'].is_running() for p in self._ollama_procs
+            )
 
-            for proc in psutil.process_iter(['name', 'pid']):
-                try:
-                    if proc.info['name'] and 'ollama' in proc.info['name'].lower():
-                        pid = proc.info['pid']
-                        current_ollama_pids.add(pid)
+            if not cache_valid:
+                # Full scan — expensive but infrequent
+                new_procs = []
+                for proc in psutil.process_iter(['name', 'pid']):
+                    try:
+                        if proc.info['name'] and 'ollama' in proc.info['name'].lower():
+                            pid = proc.info['pid']
+                            if pid not in self.ollama_processes_tracked:
+                                p = psutil.Process(pid)
+                                p.cpu_percent()  # Prime the measurement
+                                self.ollama_processes_tracked[pid] = {
+                                    'process': p,
+                                    'primed': False,
+                                }
+                            new_procs.append(self.ollama_processes_tracked[pid])
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        continue
 
-                        # If this is a new process, create Process object and prime CPU measurement
-                        if pid not in self.ollama_processes_tracked:
-                            p = psutil.Process(pid)
-                            p.cpu_percent()  # Prime the measurement (discard first reading)
-                            self.ollama_processes_tracked[pid] = {
-                                'process': p,
-                                'primed': False  # Skip first real reading after priming
-                            }
+                # Purge stale entries from the tracking dict
+                live_pids = {d['process'].pid for d in new_procs}
+                for pid in list(self.ollama_processes_tracked.keys()):
+                    if pid not in live_pids:
+                        del self.ollama_processes_tracked[pid]
 
-                        ollama_processes.append(self.ollama_processes_tracked[pid])
+                self._ollama_procs = new_procs
 
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-
-            # Remove dead processes from tracking
-            dead_pids = set(self.ollama_processes_tracked.keys()) - current_ollama_pids
-            for pid in dead_pids:
-                del self.ollama_processes_tracked[pid]
+            ollama_processes = self._ollama_procs
 
             if ollama_processes:
                 total_cpu_raw = 0.0
@@ -918,6 +1172,8 @@ class ChatbotGUI(QMainWindow):
                         total_ram += ram
 
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        # Process died mid-tick — invalidate cache next cycle
+                        self._ollama_procs = []
                         continue
 
                 # Normalize CPU to 0-100% range (divide by number of cores)
@@ -982,9 +1238,16 @@ class ChatbotGUI(QMainWindow):
 
         self.clear_chat_display()
         self.messages = session['messages'].copy()
+
+        last_date = ''
         for msg in self.messages:
-            # Restore the saved timestamp; fall back to empty string for old sessions
-            # that were saved before the timestamp field was introduced
+            iso_date = msg.get('date', '')
+
+            # Insert a date separator when the day changes (skip if no date field)
+            if iso_date and iso_date != last_date:
+                self._insert_date_separator(iso_date)
+                last_date = iso_date
+
             saved_timestamp = msg.get('timestamp', '')
             bubble = MessageBubble(msg['content'], msg['role'] == 'user', timestamp=saved_timestamp)
             bubble.delete_requested.connect(self.delete_message)
@@ -1102,11 +1365,20 @@ class ChatbotGUI(QMainWindow):
                 self.save_sessions()
 
     def clear_chat_display(self):
-        """Clear display"""
+        """Clear display.
+
+        Suppresses viewport repaints during the removal loop so that Qt does
+        not issue a repaint for every individual widget deletion.  This
+        eliminates the stutter visible when clearing large sessions.
+        """
+        viewport = self.scroll.viewport()
+        viewport.setUpdatesEnabled(False)
         for i in reversed(range(self.chat_layout.count() - 1)):
             widget = self.chat_layout.itemAt(i).widget()
             if widget:
+                self.chat_layout.removeWidget(widget)
                 widget.deleteLater()
+        viewport.setUpdatesEnabled(True)
 
     def save_chat(self):
         """Save chat"""
@@ -1161,11 +1433,17 @@ class ChatbotGUI(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed: {e}")
 
     def open_settings(self):
-        """Open settings"""
-        dialog = SettingsDialog(self.settings, self)
+        """Open settings — pass self so the dialog can read and write all settings"""
+        dialog = SettingsDialog(self, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Sync dark_mode shortcut from the (possibly updated) settings dict
+            self.dark_mode = self.settings.get('dark_mode', False)
+            # Re-apply theme with animated fade (user-initiated change)
+            self.apply_theme()
             # Update resource display visibility immediately
             self.update_resource_display()
+            # Persist new settings to disk
+            self.save_settings_to_disk()
 
     def _kill_process_tree(self, proc):
         """Kill a process and all of its children using psutil (cross-platform)."""
@@ -1204,8 +1482,18 @@ class ChatbotGUI(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up"""
-        # Save sessions before closing
+        # Flush any pending debounced save immediately so no data is lost
+        self._save_timer.stop()
         self.save_sessions()
+
+        # Persist settings to disk
+        self.save_settings_to_disk()
+
+        # Stop all timers
+        self._cursor_timer.stop()
+        self._scroll_timer.stop()
+        self._search_debounce_timer.stop()
+        self._scroll_check_timer.stop()
 
         # Stop resource timer
         if hasattr(self, 'resource_timer'):
@@ -1338,6 +1626,10 @@ class ChatbotGUI(QMainWindow):
                 item = QListWidgetItem(f"{session['name']}\n{session['timestamp']}")
                 self.chat_list.addItem(item)
 
+            # Re-apply theme directly after restoring sessions so colours are
+            # correct from the start without an unnecessary fade animation.
+            self._do_apply_theme()
+
             print(f"✓ Loaded {len(self.chat_sessions)} sessions")
 
         except Exception as e:
@@ -1365,11 +1657,6 @@ class ChatbotGUI(QMainWindow):
         clear_action.setShortcut(QKeySequence("Ctrl+K"))
         clear_action.triggered.connect(self.clear_chat)
         self.addAction(clear_action)
-
-        theme_action = QAction(self)
-        theme_action.setShortcut(QKeySequence("Ctrl+T"))
-        theme_action.triggered.connect(self.toggle_theme)
-        self.addAction(theme_action)
 
         settings_action = QAction(self)
         settings_action.setShortcut(QKeySequence("Ctrl+,"))

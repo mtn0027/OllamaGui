@@ -5,9 +5,10 @@ Dialog windows for settings and model management
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QTextEdit, QDialogButtonBox, QLineEdit,
                              QPushButton, QMessageBox, QComboBox, QCheckBox,
-                             QScrollArea, QWidget, QFrame, QGridLayout, QProgressBar, QGroupBox)
+                             QScrollArea, QWidget, QFrame, QGridLayout, QProgressBar, QGroupBox,
+                             QColorDialog)
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 import psutil
 import os
 
@@ -15,13 +16,36 @@ import os
 class SettingsDialog(QDialog):
     """Dialog for configuring chat settings"""
 
-    def __init__(self, settings, parent=None):
+    # Preset accent color swatches
+    ACCENT_PRESETS = [
+        "#007AFF",  # Blue (default)
+        "#34C759",  # Green
+        "#FF3B30",  # Red
+        "#FF9500",  # Orange
+        "#AF52DE",  # Purple
+        "#FF2D55",  # Pink
+        "#5AC8FA",  # Light Blue
+        "#FFCC00",  # Yellow
+        "#00C7BE",  # Teal
+    ]
+
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
-        self.settings = settings
+        self.main_window = main_window
+        self.settings = main_window.settings
+
+        # Local working copies of appearance values — only committed on Save
+        self._pending_dark_mode = self.settings.get('dark_mode', False)
+        self._pending_accent = self.settings.get('accent_color', '#007AFF')
+
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setMinimumWidth(500)
         self.setup_ui()
+
+    # ------------------------------------------------------------------
+    # UI setup
+    # ------------------------------------------------------------------
 
     def setup_ui(self):
         """Initialize the settings dialog UI"""
@@ -71,7 +95,94 @@ class SettingsDialog(QDialog):
             }
         """)
 
-        # Display Settings Group with border
+        # ── Appearance Group ──────────────────────────────────────────
+        appearance_group = QGroupBox("🎨 Appearance")
+        appearance_layout = QVBoxLayout()
+        appearance_layout.setSpacing(12)
+
+        # Dark mode checkbox
+        dark_frame = QFrame()
+        dark_frame.setStyleSheet("""
+            QFrame {
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                padding: 8px;
+                background-color: rgba(0, 0, 0, 0.02);
+            }
+        """)
+        dark_frame_layout = QVBoxLayout(dark_frame)
+        dark_frame_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.dark_mode_checkbox = QCheckBox("Dark Mode")
+        self.dark_mode_checkbox.setChecked(self._pending_dark_mode)
+        self.dark_mode_checkbox.setToolTip("Toggle dark/light theme (live preview)")
+        self.dark_mode_checkbox.toggled.connect(self._on_dark_mode_toggled)
+
+        dark_frame_layout.addWidget(self.dark_mode_checkbox)
+        appearance_layout.addWidget(dark_frame)
+
+        # Accent color label
+        accent_label = QLabel("Accent Color:")
+        accent_label.setStyleSheet("font-weight: bold; padding-left: 2px;")
+        appearance_layout.addWidget(accent_label)
+
+        # ── Accent color container frame ─────────────────────────────
+        self._accent_frame = QFrame()
+        self._accent_frame.setStyleSheet("""
+            QFrame {
+                border: 1px solid #dee2e6;
+                border-radius: 10px;
+                padding: 10px;
+            }
+        """)
+        accent_frame_layout = QVBoxLayout(self._accent_frame)
+        accent_frame_layout.setContentsMargins(10, 10, 10, 10)
+        accent_frame_layout.setSpacing(10)
+
+        # Swatch grid
+        swatch_grid = QGridLayout()
+        swatch_grid.setSpacing(8)
+        self._swatch_buttons = []
+
+        for idx, color in enumerate(self.ACCENT_PRESETS):
+            btn = QPushButton()
+            btn.setFixedSize(32, 32)
+            btn.setToolTip(color)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(self._swatch_style(color, selected=(color.upper() == self._pending_accent.upper())))
+            btn.clicked.connect(lambda checked, c=color: self._select_accent(c))
+            row, col = divmod(idx, 5)
+            swatch_grid.addWidget(btn, row, col)
+            self._swatch_buttons.append((btn, color))
+
+        accent_frame_layout.addLayout(swatch_grid)
+
+        # Custom button + preview row
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(10)
+
+        self._custom_btn = QPushButton("Custom…")
+        self._custom_btn.setFixedHeight(32)
+        self._custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._custom_btn.clicked.connect(self._pick_custom_color)
+        self._refresh_custom_btn_style()
+        bottom_row.addWidget(self._custom_btn)
+
+        # Color preview pill
+        self._accent_preview = QLabel()
+        self._accent_preview.setFixedSize(160, 32)
+        self._accent_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._update_preview_label()
+        bottom_row.addWidget(self._accent_preview)
+        bottom_row.addStretch()
+
+        accent_frame_layout.addLayout(bottom_row)
+        appearance_layout.addWidget(self._accent_frame)
+
+        appearance_group.setLayout(appearance_layout)
+        layout.addWidget(appearance_group)
+
+        # ── Display Settings Group ────────────────────────────────────
         display_group = QGroupBox("🖥️ Display Settings")
         display_layout = QVBoxLayout()
 
@@ -101,7 +212,7 @@ class SettingsDialog(QDialog):
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
 
-        # Model Settings Group
+        # ── Model Settings Group ──────────────────────────────────────
         model_group = QGroupBox("⚙️ Model Settings")
         model_layout = QVBoxLayout()
 
@@ -141,22 +252,182 @@ class SettingsDialog(QDialog):
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
-        # Buttons
+        # ── Dialog buttons ────────────────────────────────────────────
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.save_settings)
-        buttons.rejected.connect(self.reject)
+        buttons.rejected.connect(self._on_cancel)
 
         layout.addWidget(buttons)
 
+    # ------------------------------------------------------------------
+    # Appearance helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hex_to_rgb(hex_color: str) -> tuple:
+        """Convert a hex color string to an (r, g, b) tuple."""
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) == 3:
+            hex_color = ''.join(c * 2 for c in hex_color)
+        return int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+
+    @staticmethod
+    def _darken_hex(hex_color: str, factor: float = 0.40) -> str:
+        """Return a darkened version of hex_color by reducing each channel."""
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) == 3:
+            hex_color = ''.join(c * 2 for c in hex_color)
+        r = max(0, int(int(hex_color[0:2], 16) * (1 - factor)))
+        g = max(0, int(int(hex_color[2:4], 16) * (1 - factor)))
+        b = max(0, int(int(hex_color[4:6], 16) * (1 - factor)))
+        return f"#{r:02X}{g:02X}{b:02X}"
+
+    def _luminance_text_color(self, hex_color: str) -> str:
+        """Return '#000000' or '#ffffff' depending on the luminance of hex_color."""
+        r, g, b = self._hex_to_rgb(hex_color)
+        luminance = r * 0.299 + g * 0.587 + b * 0.114
+        return "#000000" if luminance > 128 else "#ffffff"
+
+    def _swatch_style(self, color: str, selected: bool = False) -> str:
+        """Return the stylesheet for a swatch button."""
+        ring_color = "#ffffff" if self._pending_dark_mode else "#212529"
+        hover_color = self._darken_hex(color, 0.40)
+
+        if selected:
+            return f"""
+                QPushButton {{
+                    background-color: {color};
+                    border: 3px solid {ring_color};
+                    border-radius: 6px;
+                    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.20);
+                }}
+            """
+        else:
+            return f"""
+                QPushButton {{
+                    background-color: {color};
+                    border: 2px solid transparent;
+                    border-radius: 6px;
+                }}
+                QPushButton:hover {{
+                    border: 2px solid {hover_color};
+                }}
+            """
+
+    def _refresh_custom_btn_style(self):
+        """Update the 'Custom…' button style to match the current dark/light mode."""
+        text_color = "#ffffff" if self._pending_dark_mode else "#212529"
+        bg_color = "rgba(255,255,255,0.08)" if self._pending_dark_mode else "transparent"
+        border_color = "#5a5a5a" if self._pending_dark_mode else "#dee2e6"
+        hover_border = self._pending_accent
+
+        self._custom_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {bg_color};
+                border: 2px solid {border_color};
+                border-radius: 8px;
+                padding: 4px 12px;
+                font-size: 12px;
+                color: {text_color};
+            }}
+            QPushButton:hover {{
+                border-color: {hover_border};
+                color: {text_color};
+            }}
+        """)
+
+    def _update_swatch_selection(self):
+        """Refresh swatch button borders to reflect the current pending accent."""
+        for btn, color in self._swatch_buttons:
+            selected = color.upper() == self._pending_accent.upper()
+            btn.setStyleSheet(self._swatch_style(color, selected))
+
+    def _update_preview_label(self):
+        """Update the wider pill preview label to show the pending accent."""
+        text_color = self._luminance_text_color(self._pending_accent)
+        r, g, b = self._hex_to_rgb(self._pending_accent)
+        border_color = f"rgba({r}, {g}, {b}, 0.40)"
+        self._accent_preview.setStyleSheet(
+            f"""
+            QLabel {{
+                background-color: {self._pending_accent};
+                color: {text_color};
+                border-radius: 16px;
+                border: 1px solid {border_color};
+                font-size: 11px;
+                font-weight: bold;
+            }}
+            """
+        )
+        self._accent_preview.setText(self._pending_accent.upper())
+
+    def _update_accent_frame_border(self):
+        """Refresh the accent container frame border for the current theme."""
+        border_color = "#404040" if self._pending_dark_mode else "#dee2e6"
+        self._accent_frame.setStyleSheet(f"""
+            QFrame {{
+                border: 1px solid {border_color};
+                border-radius: 10px;
+                padding: 10px;
+            }}
+        """)
+
+    def _select_accent(self, color: str):
+        """Handle swatch or custom color selection (pending only)."""
+        self._pending_accent = color
+        self._update_swatch_selection()
+        self._update_preview_label()
+        self._refresh_custom_btn_style()
+
+    def _on_dark_mode_toggled(self, checked: bool):
+        """Live-preview dark/light mode while the dialog is open."""
+        self._pending_dark_mode = checked
+        # Temporarily apply so the user can see the effect immediately
+        self.main_window.dark_mode = checked
+        self.main_window.apply_theme()
+        # Refresh accent section visuals to match the new theme
+        self._update_swatch_selection()
+        self._update_accent_frame_border()
+        self._refresh_custom_btn_style()
+
+    def _pick_custom_color(self):
+        """Open QColorDialog and apply the chosen color as the pending accent."""
+        initial = QColor(self._pending_accent)
+        color = QColorDialog.getColor(initial, self, "Choose Accent Color")
+        if color.isValid():
+            self._select_accent(color.name().upper())
+
+    # ------------------------------------------------------------------
+    # Save / Cancel
+    # ------------------------------------------------------------------
+
     def save_settings(self):
-        """Save the settings and close dialog"""
+        """Commit all values to main_window.settings and close."""
         self.settings['temperature'] = self.temp_slider.value() / 10
         self.settings['max_tokens'] = self.tokens_slider.value()
         self.settings['system_prompt'] = self.system_input.toPlainText()
         self.settings['show_resources'] = self.show_resources_checkbox.isChecked()
+        self.settings['dark_mode'] = self._pending_dark_mode
+        self.settings['accent_color'] = self._pending_accent
+
+        # Write back to the main window's authoritative attributes
+        self.main_window.dark_mode = self._pending_dark_mode
+        self.main_window.settings['accent_color'] = self._pending_accent
+
+        # Apply the final theme (accent may have changed)
+        self.main_window.apply_theme()
+
         self.accept()
+
+    def _on_cancel(self):
+        """Revert any live-preview changes and close without saving."""
+        # Restore the original dark_mode that was in effect before the dialog opened
+        original_dark = self.settings.get('dark_mode', False)
+        self.main_window.dark_mode = original_dark
+        self.main_window.apply_theme()
+        self.reject()
 
 
 class ModelCard(QFrame):

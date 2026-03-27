@@ -24,6 +24,76 @@ from gui.themes import (
 )
 
 
+class DateSeparator(QWidget):
+    """A horizontal date-chip separator, styled like WhatsApp / Telegram."""
+
+    def __init__(self, date_str: str, parent=None):
+        super().__init__(parent)
+        self.date_str = date_str
+        self.setFixedHeight(36)
+        self._setup_ui()
+        self.apply_light_theme()
+
+    def _setup_ui(self):
+        """Build the left-rule / label / right-rule layout."""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(10)
+
+        # Left horizontal rule
+        self._left_line = QFrame()
+        self._left_line.setFrameShape(QFrame.Shape.HLine)
+        self._left_line.setFrameShadow(QFrame.Shadow.Plain)
+        self._left_line.setFixedHeight(1)
+
+        # Date chip label
+        self._label = QLabel(self.date_str)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setFont(QFont(BASE_FONT_FAMILY, FONT_SIZE_CAPTION))
+        self._label.setSizePolicy(
+            self._label.sizePolicy().horizontalPolicy(),
+            self._label.sizePolicy().verticalPolicy(),
+        )
+        self._label.setContentsMargins(SPACE_MD, 2, SPACE_MD, 2)
+
+        # Right horizontal rule
+        self._right_line = QFrame()
+        self._right_line.setFrameShape(QFrame.Shape.HLine)
+        self._right_line.setFrameShadow(QFrame.Shadow.Plain)
+        self._right_line.setFixedHeight(1)
+
+        layout.addWidget(self._left_line, 1)
+        layout.addWidget(self._label, 0)
+        layout.addWidget(self._right_line, 1)
+
+    def _apply_tokens(self, tokens: dict):
+        """Apply a token dict to all child elements."""
+        line_color = tokens['border_subtle']
+        self._left_line.setStyleSheet(f"background-color: {line_color}; border: none;")
+        self._right_line.setStyleSheet(f"background-color: {line_color}; border: none;")
+        self._label.setStyleSheet(
+            f"""
+            QLabel {{
+                background-color: {tokens['bg_surface_alt']};
+                color: {tokens['text_muted']};
+                border: 1px solid {tokens['border_subtle']};
+                border-radius: {RADIUS_MD}px;
+                font-size: {FONT_SIZE_CAPTION}px;
+                font-family: {BASE_FONT_FAMILY};
+                padding: 2px {SPACE_MD}px;
+            }}
+            """
+        )
+
+    def apply_light_theme(self):
+        """Switch to light-theme colors."""
+        self._apply_tokens(LIGHT_TOKENS)
+
+    def apply_dark_theme(self):
+        """Switch to dark-theme colors."""
+        self._apply_tokens(DARK_TOKENS)
+
+
 class CodeSyntaxHighlighter(QSyntaxHighlighter):
     """Syntax highlighter for code blocks"""
 
@@ -200,15 +270,28 @@ class MessageBubble(QFrame):
 
     delete_requested = pyqtSignal(object)  # Signal to request deletion
 
-    def __init__(self, text, is_user, timestamp=None, parent=None):
+    def __init__(self, text, is_user, timestamp=None, is_streaming=False, parent=None):
         super().__init__(parent)
         self.is_user = is_user
         self.text_content = text
         self.search_text = None
         self.is_current_match = False
-        self.is_streaming = False  # Track if message is being streamed
-        self.streaming_label = None  # Reference to label during streaming
+
+        # Public streaming flag (read by main_window) and internal guard used
+        # by the streaming dispatch path.
+        self.is_streaming = is_streaming
+        self._is_streaming = False          # set to True by start_streaming()
+
+        # streaming_label is the single QLabel used while tokens arrive.
+        # It is created by start_streaming() and destroyed by finalize_streaming().
+        self.streaming_label = None
+
         self.text_labels = []  # Store references to text labels with their content
+
+        # Cache for the last search text applied via _apply_highlight().
+        # Prevents re-rendering HTML spans on every keystroke when the term
+        # has not changed (only the current-match colour may differ).
+        self._last_highlight_text = ""
 
         # Store timestamp — auto-generate if not provided
         self.timestamp_str = timestamp if timestamp else datetime.now().strftime("%H:%M")
@@ -216,7 +299,7 @@ class MessageBubble(QFrame):
         # Get the icons directory path
         self.icons_dir = Path(__file__).parent.parent / "icons"
 
-        self.setup_ui(text)
+        self.setup_ui(text, is_streaming=is_streaming)
 
     def load_icon(self, icon_name):
         """Load an SVG icon from the icons directory"""
@@ -280,8 +363,57 @@ class MessageBubble(QFrame):
         )
         return ts_label
 
-    def setup_ui(self, text):
-        """Initialize the message bubble UI"""
+    def _make_text_label(self, text):
+        """Create a styled, plain-text-format QLabel for a prose segment.
+
+        Using PlainText format tells Qt to skip the HTML auto-detection pass
+        on every setText() call, which eliminates measurable overhead at the
+        60 fps streaming rate.
+        """
+        message = QLabel(text)
+        message.setWordWrap(True)
+        message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # Explicitly opt out of HTML parsing; _apply_highlight() switches to
+        # RichText only when it needs to inject <span> tags.
+        message.setTextFormat(Qt.TextFormat.PlainText)
+
+        if self.is_user:
+            message.setStyleSheet(
+                f"""
+                QLabel {{
+                    background-color: {LIGHT_TOKENS['primary']};
+                    color: {LIGHT_TOKENS['text_inverse']};
+                    border-radius: {RADIUS_LG}px;
+                    padding: {SPACE_MD}px;
+                    font-size: {FONT_SIZE_BODY}px;
+                    font-family: {BASE_FONT_FAMILY};
+                }}
+                """
+            )
+        else:
+            message.setStyleSheet(
+                f"""
+                QLabel {{
+                    background-color: {LIGHT_TOKENS['bg_surface_alt']};
+                    color: {LIGHT_TOKENS['text_primary']};
+                    border-radius: {RADIUS_LG}px;
+                    padding: {SPACE_MD}px;
+                    font-size: {FONT_SIZE_BODY}px;
+                    font-family: {BASE_FONT_FAMILY};
+                }}
+                """
+            )
+        return message
+
+    def setup_ui(self, text, is_streaming=False):
+        """Initialize the message bubble UI.
+
+        Builds the outer frame (avatar, content container, copy/delete buttons)
+        regardless of streaming state.  Content population is handled separately:
+        - Streaming path: start_streaming() inserts the live QLabel at index 0.
+        - Normal path: parse_markdown_content() populates the content_layout here.
+        """
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
 
@@ -310,56 +442,28 @@ class MessageBubble(QFrame):
         # Clear text labels list
         self.text_labels = []
 
-        # Parse content for code blocks
-        parts = self.parse_markdown_content(text)
+        if is_streaming:
+            # Streaming path: content_layout starts empty; start_streaming()
+            # inserts the live label at index 0 when the first token arrives.
+            self.start_streaming()
+        else:
+            # Normal path: full markdown parse, build all content widgets now.
+            parts = self.parse_markdown_content(text)
 
-        for part in parts:
-            if part[0] == 'text':
-                # Regular text message
-                message = QLabel(part[1])
-                message.setWordWrap(True)
-                message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            for part in parts:
+                if part[0] == 'text':
+                    message = self._make_text_label(part[1])
+                    self.content_layout.addWidget(message)
+                    self.text_labels.append({'widget': message, 'text': part[1]})
 
-                if self.is_user:
-                    message.setStyleSheet(
-                        f"""
-                        QLabel {{
-                            background-color: {LIGHT_TOKENS['primary']};
-                            color: {LIGHT_TOKENS['text_inverse']};
-                            border-radius: {RADIUS_LG}px;
-                            padding: {SPACE_MD}px;
-                            font-size: {FONT_SIZE_BODY}px;
-                            font-family: {BASE_FONT_FAMILY};
-                        }}
-                        """
-                    )
-                else:
-                    message.setStyleSheet(
-                        f"""
-                        QLabel {{
-                            background-color: {LIGHT_TOKENS['bg_surface_alt']};
-                            color: {LIGHT_TOKENS['text_primary']};
-                            border-radius: {RADIUS_LG}px;
-                            padding: {SPACE_MD}px;
-                            font-size: {FONT_SIZE_BODY}px;
-                            font-family: {BASE_FONT_FAMILY};
-                        }}
-                        """
-                    )
-                self.content_layout.addWidget(message)
+                elif part[0] == 'code':
+                    # Code block - make it wider
+                    code_widget = CodeBlockWidget(part[1], part[2])
+                    code_widget.setMinimumWidth(600)
+                    self.content_layout.addWidget(code_widget)
 
-                # Store reference to text label with its content
-                self.text_labels.append({'widget': message, 'text': part[1]})
-
-            elif part[0] == 'code':
-                # Code block - make it wider
-                code_widget = CodeBlockWidget(part[1], part[2])
-                code_widget.setMinimumWidth(600)  # Minimum width for code blocks
-                self.content_layout.addWidget(code_widget)
-
-        # Timestamp label — sits below all content parts
-        self.content_layout.addWidget(self._make_timestamp_label())
+            # Timestamp label — sits below all content parts
+            self.content_layout.addWidget(self._make_timestamp_label())
 
         # Copy button
         copy_btn = QPushButton()
@@ -367,7 +471,7 @@ class MessageBubble(QFrame):
         copy_btn.setIcon(self.load_icon("copy.svg"))
         copy_btn.setIconSize(QSize(18, 18))
         copy_btn.setToolTip("Copy to clipboard")
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(text))
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self.text_content))
         copy_btn.setStyleSheet("""
             QPushButton {
                 background-color: rgba(0, 122, 255, 0.1);
@@ -413,90 +517,138 @@ class MessageBubble(QFrame):
             layout.addWidget(self.content_container)
             layout.addStretch()
 
-    def update_text(self, new_text, is_streaming=True):
-        """Update the message text efficiently without recreating widgets"""
-        self.text_content = new_text
-        self.is_streaming = is_streaming
+    # ------------------------------------------------------------------
+    # Streaming path — zero layout changes during token delivery
+    # ------------------------------------------------------------------
 
-        # If streaming, just update the text label without recreating widgets
-        if is_streaming and self.streaming_label is not None:
-            self.streaming_label.setText(new_text)
-            # Update the stored text for this label
-            for label_data in self.text_labels:
-                if label_data['widget'] == self.streaming_label:
-                    label_data['text'] = new_text
-                    break
-            return
+    def start_streaming(self):
+        """Create the dedicated streaming label and enter streaming mode.
 
-        # If not streaming or first time, recreate widgets to parse code blocks
-        # Clear existing content widgets
+        Called once, either from setup_ui() when the bubble is constructed
+        with is_streaming=True, or lazily from stream_text() on the first
+        token.  The label is inserted at index 0 so it appears above the
+        timestamp (which is not added until finalize_streaming()).
+        """
+        self._is_streaming = True
+        self.is_streaming = True
+
+        # Create a lightweight plain-text label — no HTML parser, no layout
+        # invalidation on every setText() call.
+        lbl = QLabel("")
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lbl.setTextFormat(Qt.TextFormat.PlainText)
+        lbl.setContentsMargins(0, 0, 0, 0)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lbl.setStyleSheet(
+            f"""
+            QLabel {{
+                background-color: {LIGHT_TOKENS['bg_surface_alt']};
+                color: {LIGHT_TOKENS['text_primary']};
+                border-radius: {RADIUS_LG}px;
+                padding: {SPACE_MD}px;
+                font-size: {FONT_SIZE_BODY}px;
+                font-family: {BASE_FONT_FAMILY};
+            }}
+            """
+        )
+
+        self.streaming_label = lbl
+        # Insert at position 0; content_layout is empty at this point so
+        # this is equivalent to addWidget, but explicit about intent.
+        self.content_layout.insertWidget(0, self.streaming_label)
+
+    def stream_text(self, text: str):
+        """Update the live streaming label with accumulated response text.
+
+        This is the hot path called at up to 60 fps.  It does exactly one
+        thing: setText() on the existing label.  No layout changes, no widget
+        creation, no markdown parsing.  Must complete in under 0.1 ms.
+        """
+        if self.streaming_label is None:
+            self.start_streaming()
+        self.text_content = text
+        self.streaming_label.setText(text)
+
+    def finalize_streaming(self, final_text: str):
+        """Tear down the streaming label and render the finished message.
+
+        This is the only place parse_markdown_content() is called for a
+        streamed message.  It replaces the plain streaming label with fully
+        rendered content including code blocks, then appends the timestamp.
+        """
+        self._is_streaming = False
+        self.is_streaming = False
+        self.text_content = final_text
+
+        # Remove and destroy the streaming label
+        if self.streaming_label is not None:
+            self.content_layout.removeWidget(self.streaming_label)
+            self.streaming_label.deleteLater()
+            self.streaming_label = None
+
+        # Clear any remaining widgets (safety — should be empty at this point)
         while self.content_layout.count() > 0:
             item = self.content_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        self.streaming_label = None  # Reset reference
-        self.text_labels = []  # Clear text labels list
+        self.text_labels = []
+        self._last_highlight_text = ""
 
-        # Parse and add new content
-        parts = self.parse_markdown_content(new_text)
+        # Full markdown parse — only runs once, here, for streamed messages
+        parts = self.parse_markdown_content(final_text)
 
         for part in parts:
             if part[0] == 'text':
-                # Regular text message
-                message = QLabel(part[1])
-                message.setWordWrap(True)
-                message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-                if self.is_user:
-                    message.setStyleSheet(
-                        f"""
-                        QLabel {{
-                            background-color: {LIGHT_TOKENS['primary']};
-                            color: {LIGHT_TOKENS['text_inverse']};
-                            border-radius: {RADIUS_LG}px;
-                            padding: {SPACE_MD}px;
-                            font-size: {FONT_SIZE_BODY}px;
-                            font-family: {BASE_FONT_FAMILY};
-                        }}
-                        """
-                    )
-                else:
-                    message.setStyleSheet(
-                        f"""
-                        QLabel {{
-                            background-color: {LIGHT_TOKENS['bg_surface_alt']};
-                            color: {LIGHT_TOKENS['text_primary']};
-                            border-radius: {RADIUS_LG}px;
-                            padding: {SPACE_MD}px;
-                            font-size: {FONT_SIZE_BODY}px;
-                            font-family: {BASE_FONT_FAMILY};
-                        }}
-                        """
-                    )
+                message = self._make_text_label(part[1])
                 self.content_layout.addWidget(message)
-
-                # Store reference to text label with its content
                 self.text_labels.append({'widget': message, 'text': part[1]})
 
-                # Store reference to first label for streaming updates
-                if self.streaming_label is None:
-                    self.streaming_label = message
-
             elif part[0] == 'code':
-                # Code block
                 code_widget = CodeBlockWidget(part[1], part[2])
                 code_widget.setMinimumWidth(600)
                 self.content_layout.addWidget(code_widget)
 
-        # Re-add timestamp label after rebuild
+        # Timestamp added once, at the end of the finished message
         self.content_layout.addWidget(self._make_timestamp_label())
+
+    # ------------------------------------------------------------------
+    # General text update (called by main_window for both streaming and
+    # non-streaming contexts)
+    # ------------------------------------------------------------------
+
+    def update_text(self, new_text, is_streaming=True):
+        """Update the message text.
+
+        Streaming guard: if _is_streaming is True, delegate immediately to
+        stream_text() — zero layout work, zero markdown parsing.
+
+        Finalization: when is_streaming=False, sync the flags and delegate to
+        finalize_streaming() which tears down the streaming label, runs the
+        full parse, and adds the timestamp exactly once.
+        """
+        # Sync public attribute so external readers (main_window) stay correct
+        self._is_streaming = is_streaming
+        self.is_streaming = is_streaming
+        self.text_content = new_text
+
+        if self._is_streaming:
+            # Hot path — called at 60 fps during streaming
+            self.stream_text(new_text)
+            return
+
+        # Finalization path — called once when streaming is complete
+        self.finalize_streaming(new_text)
+
+    # ------------------------------------------------------------------
+    # Search / highlight
+    # ------------------------------------------------------------------
 
     def highlight_text(self, search_text):
         """Highlight search text in the message - only in text labels, not code blocks"""
         # Don't highlight while streaming to prevent glitches
-        if self.is_streaming:
+        if self._is_streaming:
             return
         self.search_text = search_text.lower()
         self._apply_highlight(False)
@@ -505,12 +657,15 @@ class MessageBubble(QFrame):
         """Set whether this is the current search match"""
         self.is_current_match = is_current
         if hasattr(self, 'search_text') and self.search_text:
-            self._apply_highlight(is_current)
+            # Force=True: the search term is unchanged but the highlight colour
+            # must update (normal → current or vice versa), so skip the cache.
+            self._apply_highlight(is_current, force=True)
 
     def clear_highlight(self):
         """Clear search highlighting"""
         self.search_text = None
         self.is_current_match = False
+        self._last_highlight_text = ""  # Invalidate cache
 
         # Reset only text labels to original style (not code blocks)
         for label_data in self.text_labels:
@@ -542,13 +697,23 @@ class MessageBubble(QFrame):
                     }}
                     """
                 )
-            # Reset to plain text with stored original content
+            # Restore PlainText format and the original stored content
             widget.setTextFormat(Qt.TextFormat.PlainText)
             widget.setText(label_data['text'])
 
-    def _apply_highlight(self, is_current):
-        """Apply highlighting to matching text - only in text labels"""
+    def _apply_highlight(self, is_current, force=False):
+        """Apply highlighting to matching text - only in text labels.
+
+        Skips re-rendering HTML if the search term is identical to the last
+        rendered term and force=False.  set_current_match() passes force=True
+        because only the highlight colour changes, not the search term.
+        """
         if not hasattr(self, 'search_text') or not self.search_text:
+            return
+
+        # Cache check: if the search term hasn't changed and we're not forced
+        # (e.g. by a current-match colour update), skip the expensive HTML pass.
+        if self.search_text == self._last_highlight_text and not force:
             return
 
         # Highlight color - orange for current match, yellow for others
@@ -568,9 +733,12 @@ class MessageBubble(QFrame):
                     highlight_color
                 )
 
-                # Set HTML text
+                # Switch to RichText only when injecting HTML spans
                 widget.setTextFormat(Qt.TextFormat.RichText)
                 widget.setText(highlighted_text)
+
+        # Update cache so identical subsequent calls are skipped
+        self._last_highlight_text = self.search_text
 
     def _create_highlighted_html(self, text, search_text, highlight_color):
         """Create HTML with highlighted search terms"""
