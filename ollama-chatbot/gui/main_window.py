@@ -73,6 +73,11 @@ class ChatbotGUI(QMainWindow):
         self.current_response_date = ""
         self._token_count = 0  # simple counter for diagnostics; no throttle logic
 
+        # When True, _auto_scroll_tick follows the streamed output.
+        # Set to False when the user scrolls up; True when streaming starts
+        # or the user clicks the scroll-to-bottom button.
+        self._auto_scroll = True
+
         # Blinking cursor — only the bool is toggled by the timer;
         # the actual setText() is issued by update_response() and _toggle_cursor().
         self._cursor_visible = False
@@ -329,6 +334,9 @@ class ChatbotGUI(QMainWindow):
         self._scroll_check_timer.timeout.connect(self.check_scroll_position)
         self._scroll_check_timer.start()
 
+        self.scroll.verticalScrollBar().sliderMoved.connect(self._on_user_scrolled)
+        self.scroll.verticalScrollBar().actionTriggered.connect(self._on_user_scrolled)
+
         parent_layout.addWidget(chat_wrapper)
 
     def _is_near_bottom(self) -> bool:
@@ -336,9 +344,17 @@ class ChatbotGUI(QMainWindow):
         sb = self.scroll.verticalScrollBar()
         return sb.value() >= sb.maximum() - 150
 
+    def _on_user_scrolled(self, *args):
+        """Called when the user manually moves the scrollbar.
+        Pauses auto-follow so the user can read without the view jumping."""
+        if not self._is_near_bottom():
+            self._auto_scroll = False
+            self.scroll_bottom_btn.show()
+            self.position_scroll_button()
+
     def _auto_scroll_tick(self):
-        """Called every 100 ms while streaming; scrolls only when near the bottom."""
-        if self._is_near_bottom():
+        """Called every 100 ms while streaming; only scrolls if auto-follow is active."""
+        if self._auto_scroll:
             self.scroll_to_bottom()
 
     def check_scroll_position(self):
@@ -636,6 +652,18 @@ class ChatbotGUI(QMainWindow):
         """Send message"""
         text = self.input_box.toPlainText().strip()
         if not text or not self.model_selector.currentText():
+            return
+
+        # Pre-flight check — verify Ollama is reachable before committing to
+        # the send flow.  A fast timeout keeps the UI responsive on failure.
+        try:
+            requests.get("http://localhost:11434/api/tags", timeout=2)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            QMessageBox.critical(
+                self,
+                "Ollama Not Running",
+                "Ollama is not running. Please start Ollama and try again."
+            )
             return
 
         self.add_message(text, True)
@@ -955,6 +983,7 @@ class ChatbotGUI(QMainWindow):
             )
             self.current_message_bubble.delete_requested.connect(self.delete_message)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, self.current_message_bubble)
+            self._auto_scroll = True
             self._start_cursor()
             self._scroll_timer.start()
 
@@ -1048,7 +1077,8 @@ class ChatbotGUI(QMainWindow):
         self.input_box.setFocus()
 
     def scroll_to_bottom(self):
-        """Scroll to bottom"""
+        """Scroll to bottom and re-enable auto-follow."""
+        self._auto_scroll = True
         self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum())
         self.scroll_bottom_btn.hide()  # Hide button after scrolling
 
@@ -1110,8 +1140,18 @@ class ChatbotGUI(QMainWindow):
             # Keep the cached list if every entry is still running.
             # Re-scan the full process table only on first call or after a
             # process death, which happens at most once per Ollama restart.
-            cache_valid = bool(self._ollama_procs) and all(
-                p['process'].is_running() for p in self._ollama_procs
+            # Count live ollama processes without fetching full info (cheap)
+            live_ollama_count = sum(
+                1 for p in psutil.process_iter(['name'])
+                if p.info['name'] and 'ollama' in p.info['name'].lower()
+            )
+
+            # Cache is valid only if all cached processes are still running AND
+            # no new ollama processes have appeared (e.g. model runner spawning)
+            cache_valid = (
+                bool(self._ollama_procs)
+                and len(self._ollama_procs) == live_ollama_count
+                and all(p['process'].is_running() for p in self._ollama_procs)
             )
 
             if not cache_valid:
@@ -1161,10 +1201,11 @@ class ChatbotGUI(QMainWindow):
 
                         total_cpu_raw += cpu
 
-                        # RAM: match Task Manager (Private Working Set on Windows)
+                        # RAM: use rss (Working Set) — always accessible without
+                        # elevated privileges and matches Task Manager's value.
                         if sys.platform == "win32":
-                            mem_info = proc.memory_full_info()
-                            ram = mem_info.wset / (1024 * 1024)
+                            mem_info = proc.memory_info()
+                            ram = mem_info.rss / (1024 * 1024)
                         else:
                             mem_info = proc.memory_info()
                             ram = mem_info.rss / (1024 * 1024)
@@ -1176,7 +1217,8 @@ class ChatbotGUI(QMainWindow):
                         self._ollama_procs = []
                         continue
 
-                # Normalize CPU to 0-100% range (divide by number of cores)
+                # Normalise from per-core percentage to percentage of total system CPU,
+                # matching the value shown in Windows Task Manager's Processes tab.
                 total_cpu = total_cpu_raw / logical_cores
 
                 # Update labels

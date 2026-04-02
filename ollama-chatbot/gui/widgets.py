@@ -855,14 +855,14 @@ class SearchBar(QWidget):
         layout.addWidget(self.next_btn)
 
         # Close button
-        close_btn = QPushButton()
-        close_btn.setIcon(self.load_icon("cross-mark.svg"))
-        close_btn.setIconSize(QSize(16, 16))
-        close_btn.setFixedSize(32, 32)
-        close_btn.setToolTip("Close (Esc)")
-        close_btn.setStyleSheet(self._BTN_STYLE)
-        close_btn.clicked.connect(self.hide_animated)
-        layout.addWidget(close_btn)
+        self.close_btn = QPushButton()
+        self.close_btn.setIcon(self.load_icon("cross-mark.svg"))
+        self.close_btn.setIconSize(QSize(16, 16))
+        self.close_btn.setFixedSize(32, 32)
+        self.close_btn.setToolTip("Close (Esc)")
+        self.close_btn.setStyleSheet(self._BTN_STYLE)
+        self.close_btn.clicked.connect(self.hide_animated)
+        layout.addWidget(self.close_btn)
 
         # Apply default light theme
         self.apply_light_theme()
@@ -977,6 +977,24 @@ class SearchBar(QWidget):
         self.results_label.setStyleSheet(
             f"color: {tokens['text_muted']}; font-size: {FONT_SIZE_CAPTION}px;"
         )
+        _dark_btn_style = """
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.10);
+                border: 1px solid #5a5a5a;
+                border-radius: 16px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 122, 255, 0.20);
+                border-color: #007AFF;
+            }
+            QPushButton:disabled {
+                opacity: 0.4;
+            }
+        """
+        self.prev_btn.setStyleSheet(_dark_btn_style)
+        self.next_btn.setStyleSheet(_dark_btn_style)
+        self.close_btn.setStyleSheet(_dark_btn_style)
 
     def apply_light_theme(self):
         """Apply light theme styling"""
@@ -1007,6 +1025,9 @@ class SearchBar(QWidget):
         self.results_label.setStyleSheet(
             f"color: {tokens['text_muted']}; font-size: {FONT_SIZE_CAPTION}px;"
         )
+        self.prev_btn.setStyleSheet(self._BTN_STYLE)
+        self.next_btn.setStyleSheet(self._BTN_STYLE)
+        self.close_btn.setStyleSheet(self._BTN_STYLE)
 
 
 class AnimatedSidebar(QFrame):
