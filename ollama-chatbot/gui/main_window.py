@@ -17,11 +17,11 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QFileDialog, QMessageBox, QInputDialog, QLineEdit,
                              QMenu, QGraphicsOpacityEffect, QDialog)
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QSize
-from PyQt6.QtGui import QAction, QIcon, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QShortcut, QPixmap
 
 from gui.widgets import MessageBubble, AnimatedSidebar, SearchBar, DateSeparator
 from gui.dialogs import SettingsDialog, ModelDownloadDialog
-from gui.themes import LIGHT_THEME, DARK_THEME, build_light_theme, build_dark_theme, LIGHT_TOKENS, DARK_TOKENS
+from gui.themes import LIGHT_THEME, DARK_THEME, build_light_theme, build_dark_theme, LIGHT_TOKENS, DARK_TOKENS, BASE_FONT_FAMILY
 from workers.ollama_worker import OllamaWorker
 
 
@@ -199,6 +199,10 @@ class ChatbotGUI(QMainWindow):
         """Initialize the user interface"""
         self.setWindowTitle("Ollama Chat")
         self.setGeometry(100, 100, 1100, 700)
+
+        icon_path = Path(__file__).parent.parent / "ikonka.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(QPixmap(str(icon_path))))
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -737,6 +741,25 @@ class ChatbotGUI(QMainWindow):
         else:
             self.setStyleSheet(build_light_theme(accent))
             tokens = LIGHT_TOKENS
+
+        if self.dark_mode:
+            input_bg = "#2d2d2d"
+            input_border = "#6a6a6a"
+        else:
+            input_bg = "#ffffff"
+            input_border = tokens['border_strong']
+
+        self.input_box.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {input_bg};
+                color: {tokens['text_primary']};
+                border: 2px solid {input_border};
+                border-radius: 20px;
+                padding: 8px 12px;
+                font-size: 13px;
+                font-family: {BASE_FONT_FAMILY};
+            }}
+        """)
 
         if self.search_bar:
             if self.dark_mode:

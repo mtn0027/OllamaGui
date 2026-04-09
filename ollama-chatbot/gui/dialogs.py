@@ -1080,6 +1080,11 @@ class ModelDownloadDialog(QDialog):
                 }
             """)
         custom_input_layout.addWidget(self.custom_model_input)
+        self.custom_error_label = QLabel("")
+        self.custom_error_label.setStyleSheet("color: #dc3545; font-size: 11px; padding-left: 4px;")
+        self.custom_error_label.setVisible(False)
+        self.custom_error_label.setWordWrap(True)
+        custom_input_layout.addWidget(self.custom_error_label)
         self.custom_input_widget.setVisible(False)
         custom_layout.addWidget(self.custom_input_widget)
 
@@ -1239,10 +1244,81 @@ class ModelDownloadDialog(QDialog):
             # Re-enable download button if a model is selected
             self.download_btn.setEnabled(self.selected_model is not None)
 
+    def _validate_custom_model_name(self, model_name: str) -> bool:
+        """Validate a custom model name against the Ollama registry.
+
+        Makes a GET request to the Ollama search API and checks whether the
+        base name (the part before an optional ':' tag) appears in the results.
+        Shows self.custom_error_label with an appropriate message on failure
+        and returns False; hides it and returns True on success.
+        """
+        import requests as _requests
+
+        base_name = model_name.split(":")[0].lower()
+        try:
+            resp = _requests.get(
+                f"https://ollama.com/api/models?q={base_name}&limit=10",
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                self.custom_error_label.setText(
+                    f"Model '{model_name}' was not found on the Ollama registry. "
+                    "Check the name at ollama.com/library."
+                )
+                self.custom_error_label.setVisible(True)
+                return False
+            if resp.status_code != 200:
+                self.custom_error_label.setText(
+                    "Could not reach ollama.com to verify the model name. "
+                    "Check your internet connection."
+                )
+                self.custom_error_label.setVisible(True)
+                return False
+            results = resp.json()
+        except (_requests.exceptions.ConnectionError, _requests.exceptions.Timeout):
+            self.custom_error_label.setText(
+                "Could not reach ollama.com to verify the model name. "
+                "Check your internet connection."
+            )
+            self.custom_error_label.setVisible(True)
+            return False
+        except Exception:
+            self.custom_error_label.setText(
+                "Could not reach ollama.com to verify the model name. "
+                "Check your internet connection."
+            )
+            self.custom_error_label.setVisible(True)
+            return False
+
+        # The API returns a list directly or a dict with a 'models' key —
+        # handle both shapes defensively.
+        if isinstance(results, list):
+            models = results
+        else:
+            models = results.get("models", [])
+
+        for entry in models:
+            entry_name = entry.get("name", "").split(":")[0].lower()
+            if entry_name == base_name:
+                self.custom_error_label.setVisible(False)
+                self.custom_error_label.setText("")
+                return True
+
+        self.custom_error_label.setText(
+            f"Model '{model_name}' was not found on the Ollama registry. "
+            "Check the name at ollama.com/library."
+        )
+        self.custom_error_label.setVisible(True)
+        return False
+
     def start_download(self):
         """Start downloading the model"""
         import requests
         from workers.ollama_worker import ModelDownloadWorker
+
+        # Clear any stale validation error from a previous attempt
+        self.custom_error_label.setText("")
+        self.custom_error_label.setVisible(False)
 
         # Check if Ollama is running with improved error handling
         try:
@@ -1281,6 +1357,8 @@ class ModelDownloadDialog(QDialog):
         # Get model name
         if self.custom_input_widget.isVisible() and self.custom_model_input.text().strip():
             model_name = self.custom_model_input.text().strip()
+            if not self._validate_custom_model_name(model_name):
+                return
         elif self.selected_model:
             model_name = self.selected_model['model_id']
         else:
