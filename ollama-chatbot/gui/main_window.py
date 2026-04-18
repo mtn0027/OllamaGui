@@ -108,6 +108,13 @@ class ChatbotGUI(QMainWindow):
         self._save_timer.setInterval(2000)
         self._save_timer.timeout.connect(self._flush_save)
 
+        # "Thinking…" animated label timer — cycles dot count 1→2→3→1 at
+        # 500 ms intervals while waiting for the first streaming token.
+        self._thinking_timer = QTimer()
+        self._thinking_timer.setInterval(500)
+        self._thinking_timer.timeout.connect(self._tick_thinking)
+        self._thinking_dot_count = 0
+
         # Cached list of ollama psutil.Process objects.  Re-populated only
         # when the cache is empty or a cached process has died, so the full
         # process table walk runs at most once per change, not every second.
@@ -385,6 +392,15 @@ class ChatbotGUI(QMainWindow):
 
     def setup_input_area(self, parent_layout):
         """Setup the input area"""
+        # "Thinking…" status label — shown between send and first token,
+        # left-aligned, muted gray, hidden by default.
+        self.thinking_label = QLabel("")
+        self.thinking_label.setVisible(False)
+        self.thinking_label.setStyleSheet(
+            "color: #6c757d; font-size: 12px; padding-left: 4px; background: transparent;"
+        )
+        parent_layout.addWidget(self.thinking_label)
+
         input_layout = QHBoxLayout()
 
         self.input_box = QTextEdit()
@@ -689,6 +705,31 @@ class ChatbotGUI(QMainWindow):
         self.worker.error.connect(self.handle_error)
         self.worker.start()
 
+        # Show the animated "Thinking…" label while waiting for the first token
+        self._start_thinking()
+
+    # ------------------------------------------------------------------
+    # "Thinking…" animated label helpers
+    # ------------------------------------------------------------------
+
+    def _start_thinking(self):
+        """Show the thinking label and start the dot-cycling animation."""
+        self._thinking_dot_count = 1
+        self.thinking_label.setText("Thinking.")
+        self.thinking_label.setVisible(True)
+        self._thinking_timer.start()
+
+    def _stop_thinking(self):
+        """Instantly hide the thinking label and stop its timer."""
+        self._thinking_timer.stop()
+        self.thinking_label.setVisible(False)
+        self.thinking_label.setText("")
+
+    def _tick_thinking(self):
+        """Timer slot: cycle dot count 1 → 2 → 3 → 1 and update the label."""
+        self._thinking_dot_count = self._thinking_dot_count % 3 + 1
+        self.thinking_label.setText("Thinking" + "." * self._thinking_dot_count)
+
     # ------------------------------------------------------------------
     # Blinking cursor helpers
     # ------------------------------------------------------------------
@@ -798,6 +839,13 @@ class ChatbotGUI(QMainWindow):
                         widget.apply_dark_theme()
                     else:
                         widget.apply_light_theme()
+
+        # Keep the thinking label color in sync with the active theme
+        if hasattr(self, 'thinking_label'):
+            muted = tokens['text_muted']
+            self.thinking_label.setStyleSheet(
+                f"color: {muted}; font-size: 12px; padding-left: 4px; background: transparent;"
+            )
 
     def _animate_theme_change(self, callback):
         """Fade opacity 1.0 → 0.85, swap the theme, then fade back to 1.0.
@@ -995,7 +1043,8 @@ class ChatbotGUI(QMainWindow):
         self._token_count += 1
 
         if self.current_message_bubble is None:
-            # First token — create the bubble and start support timers
+            # First token — hide the thinking label, create the bubble, start timers
+            self._stop_thinking()
             now = datetime.now()
             self.current_response_timestamp = now.strftime("%H:%M")
             self.current_response_date = now.strftime("%Y-%m-%d")
@@ -1056,9 +1105,10 @@ class ChatbotGUI(QMainWindow):
             self.worker.stop()
             self.worker.wait()
 
-            # Stop cursor and scroll timers
+            # Stop cursor, scroll, and thinking timers
             self._stop_cursor()
             self._scroll_timer.stop()
+            self._stop_thinking()
 
             # Finalize whatever was generated so far
             if self.current_response and self.current_message_bubble is not None:
@@ -1090,6 +1140,7 @@ class ChatbotGUI(QMainWindow):
         """Handle error"""
         self._stop_cursor()
         self._scroll_timer.stop()
+        self._stop_thinking()
         QMessageBox.critical(self, "Error", f"Failed: {error}")
         self.current_response = ""
         self.current_message_bubble = None
@@ -1559,6 +1610,7 @@ class ChatbotGUI(QMainWindow):
         self._scroll_timer.stop()
         self._search_debounce_timer.stop()
         self._scroll_check_timer.stop()
+        self._thinking_timer.stop()
 
         # Stop resource timer
         if hasattr(self, 'resource_timer'):
