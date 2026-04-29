@@ -120,6 +120,11 @@ class ChatbotGUI(QMainWindow):
         # process table walk runs at most once per change, not every second.
         self._ollama_procs: list = []
 
+        # Context length cache — maps model name → context window size (int).
+        # Populated lazily by _fetch_context_length(); avoids repeated API calls.
+        self._context_length_cache: dict = {}
+        self._model_context_length: int = 4096
+
         self.settings = {
             'temperature': 0.7,
             'max_tokens': 2000,
@@ -392,14 +397,28 @@ class ChatbotGUI(QMainWindow):
 
     def setup_input_area(self, parent_layout):
         """Setup the input area"""
-        # "Thinking…" status label — shown between send and first token,
-        # left-aligned, muted gray, hidden by default.
+        # Status row — "Thinking…" label on the left, token counter on the right
+        status_row = QHBoxLayout()
+
         self.thinking_label = QLabel("")
         self.thinking_label.setVisible(False)
         self.thinking_label.setStyleSheet(
             "color: #6c757d; font-size: 12px; padding-left: 4px; background: transparent;"
         )
-        parent_layout.addWidget(self.thinking_label)
+        status_row.addWidget(self.thinking_label)
+
+        status_row.addStretch()
+
+        # Live token counter — right-aligned, muted, hidden when no content
+        self.token_counter_label = QLabel("")
+        self.token_counter_label.setVisible(False)
+        self.token_counter_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.token_counter_label.setStyleSheet(
+            "color: #6c757d; font-size: 11px; padding-right: 4px; background: transparent;"
+        )
+        status_row.addWidget(self.token_counter_label)
+
+        parent_layout.addLayout(status_row)
 
         input_layout = QHBoxLayout()
 
@@ -407,6 +426,7 @@ class ChatbotGUI(QMainWindow):
         self.input_box.setPlaceholderText("Type your message... (Enter to send, Shift+Enter for new line)")
         self.input_box.setMaximumHeight(100)
         self.input_box.installEventFilter(self)
+        self.input_box.textChanged.connect(self._update_token_counter)
 
         self.send_btn = QPushButton("Send  ")
         self.send_btn.setObjectName("primaryButton")
@@ -686,6 +706,32 @@ class ChatbotGUI(QMainWindow):
             )
             return
 
+        # Context window warning — estimate total tokens (word count) and warn
+        # if the conversation is approaching the model's context limit.
+        system_prompt = self.settings['system_prompt']
+        estimated = len(system_prompt.split())
+        for msg in self.messages:
+            estimated += len(msg['content'].split())
+        estimated += len(text.split())
+
+        context = self._model_context_length
+        pct = (estimated / context * 100) if context > 0 else 0
+
+        if pct > 80:
+            warn_box = QMessageBox(self)
+            warn_box.setWindowTitle("Context Window Warning")
+            warn_box.setText(
+                f"The conversation is using approximately {pct:.0f}% of this model's context window "
+                f"(~{estimated} / {context} tokens).\n\n"
+                f"Sending may cause the model to lose earlier context or produce truncated responses.\n\n"
+                f"Send anyway?"
+            )
+            send_anyway_btn = warn_box.addButton("Send Anyway", QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = warn_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            warn_box.exec()
+            if warn_box.clickedButton() == cancel_btn:
+                return
+
         self.add_message(text, True)
         self.input_box.clear()
         self.input_box.setEnabled(False)
@@ -693,9 +739,17 @@ class ChatbotGUI(QMainWindow):
         self.stop_btn.setVisible(True)
 
         self.current_response = ""
+
+        # Build the messages list for multi-turn context from self.messages
+        # (already updated by add_message above) and pass to OllamaWorker
+        messages_to_send = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in self.messages
+        ]
+
         self.worker = OllamaWorker(
             self.model_selector.currentText(),
-            text,
+            messages_to_send,
             self.settings['system_prompt'],
             self.settings['temperature'],
             self.settings['max_tokens']
@@ -757,6 +811,73 @@ class ChatbotGUI(QMainWindow):
         """Stop the blinking cursor and reset the visible flag."""
         self._cursor_timer.stop()
         self._cursor_visible = False
+
+    # ------------------------------------------------------------------
+    # Context length helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_context_length(self, model: str) -> int:
+        """Fetch the context window size for a model from the Ollama API.
+
+        Results are cached in self._context_length_cache so the API is only
+        called once per model per session.  Falls back to 4096 on any error
+        or missing key.
+        """
+        if model in self._context_length_cache:
+            return self._context_length_cache[model]
+        try:
+            resp = requests.post(
+                "http://localhost:11434/api/show",
+                json={"name": model},
+                timeout=5
+            )
+            length = resp.json()["model_info"]["llama.context_length"]
+            self._context_length_cache[model] = int(length)
+            return int(length)
+        except Exception:
+            self._context_length_cache[model] = 4096
+            return 4096
+
+    # ------------------------------------------------------------------
+    # Token counter helpers
+    # ------------------------------------------------------------------
+
+    def _update_token_counter(self):
+        """Recompute the estimated token usage and update the counter label.
+
+        Estimation uses word count (len(text.split())) across the system
+        prompt, all stored messages, and the current input box text.
+        Label is hidden when there is no content to show.
+        """
+        tokens = DARK_TOKENS if self.dark_mode else LIGHT_TOKENS
+
+        system_prompt = self.settings.get('system_prompt', '')
+        estimated = len(system_prompt.split())
+        for msg in self.messages:
+            estimated += len(msg['content'].split())
+        current_input = self.input_box.toPlainText() if hasattr(self, 'input_box') else ""
+        estimated += len(current_input.split())
+
+        if estimated == 0:
+            self.token_counter_label.setVisible(False)
+            return
+
+        context = self._model_context_length
+        pct = (estimated / context * 100) if context > 0 else 0
+
+        self.token_counter_label.setVisible(True)
+        self.token_counter_label.setText(f"~{estimated} / {context} tokens ({pct:.0f}%)")
+
+        if pct < 80:
+            color = tokens['text_muted']
+        elif pct <= 100:
+            color = "#FF9500"
+        else:
+            color = tokens['danger']
+
+        self.token_counter_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; padding-right: 4px; background: transparent;"
+        )
 
     # ------------------------------------------------------------------
     # Theme helpers
@@ -846,6 +967,10 @@ class ChatbotGUI(QMainWindow):
             self.thinking_label.setStyleSheet(
                 f"color: {muted}; font-size: 12px; padding-left: 4px; background: transparent;"
             )
+
+        # Refresh the token counter label color for the new theme
+        if hasattr(self, 'token_counter_label'):
+            self._update_token_counter()
 
     def _animate_theme_change(self, callback):
         """Fade opacity 1.0 → 0.85, swap the theme, then fade back to 1.0.
@@ -1099,6 +1224,9 @@ class ChatbotGUI(QMainWindow):
         # One final scroll to show the complete response
         self.scroll_to_bottom()
 
+        # Refresh token counter after the response is stored
+        self._update_token_counter()
+
     def stop_generation(self):
         """Stop the AI generation"""
         if self.worker and self.worker.isRunning():
@@ -1190,6 +1318,8 @@ class ChatbotGUI(QMainWindow):
         """Update model label"""
         model = self.model_selector.currentText()
         self.model_label.setText(f"Model: {model if model else 'None'}")
+        if model:
+            self._model_context_length = self._fetch_context_length(model)
         if self.current_session_index >= 0:
             self.chat_sessions[self.current_session_index]['model'] = model
             self.save_sessions()
@@ -1371,6 +1501,9 @@ class ChatbotGUI(QMainWindow):
 
         # Scroll to bottom after loading messages
         QTimer.singleShot(100, self.scroll_to_bottom)
+
+        # Refresh token counter after loading a session
+        self._update_token_counter()
 
     def show_chat_context_menu(self, position):
         """Show context menu"""

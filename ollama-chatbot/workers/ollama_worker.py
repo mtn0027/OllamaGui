@@ -15,10 +15,10 @@ class OllamaWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, model, prompt, system_prompt="", temp=0.7, max_tokens=2000):
+    def __init__(self, model, messages, system_prompt="", temp=0.7, max_tokens=2000):
         super().__init__()
         self.model = model
-        self.prompt = prompt
+        self.messages = messages
         self.system_prompt = system_prompt
         self.temp = temp
         self.max_tokens = max_tokens
@@ -27,19 +27,24 @@ class OllamaWorker(QThread):
     def run(self):
         """Execute the API request in background thread"""
         try:
-            url = "http://localhost:11434/api/generate"
+            url = "http://localhost:11434/api/chat"
+
+            # Build the messages list; prepend system message if provided
+            # without mutating the passed-in list
+            messages_to_send = []
+            if self.system_prompt:
+                messages_to_send.append({"role": "system", "content": self.system_prompt})
+            messages_to_send.extend(self.messages)
+
             payload = {
                 "model": self.model,
-                "prompt": self.prompt,
+                "messages": messages_to_send,
                 "stream": True,
                 "options": {
                     "temperature": self.temp,
                     "num_predict": self.max_tokens
                 }
             }
-
-            if self.system_prompt:
-                payload["system"] = self.system_prompt
 
             response = requests.post(url, json=payload, stream=True)
 
@@ -75,8 +80,8 @@ class OllamaWorker(QThread):
 
                 data = json.loads(line)
 
-                if "response" in data:
-                    token = data["response"]
+                if "message" in data:
+                    token = data["message"].get("content", "")
                     # Guard against bytes leaking through the JSON deserialiser
                     if isinstance(token, bytes):
                         token = token.decode("utf-8", errors="replace")
