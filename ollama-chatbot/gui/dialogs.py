@@ -1350,10 +1350,13 @@ class ModelDownloadDialog(QDialog):
             )
             return
 
-        # Get model name — custom input is passed directly to Ollama; bad names
-        # are surfaced by the download worker's error signal instead of a pre-flight check.
+        # Get model name — validate custom names against the registry before
+        # starting the download so the user gets immediate, specific feedback
+        # instead of a silent failure or a misleading "success" message.
         if self.custom_input_widget.isVisible() and self.custom_model_input.text().strip():
             model_name = self.custom_model_input.text().strip()
+            if not self._validate_custom_model_name(model_name):
+                return
         elif self.selected_model:
             model_name = self.selected_model['model_id']
         else:
@@ -1382,19 +1385,6 @@ class ModelDownloadDialog(QDialog):
 
         # Reset cancellation flag
         self.download_canceled = False
-
-        # Check internet connectivity before starting — Ollama pull requires
-        # access to the Ollama registry even when the server is running locally.
-        try:
-            requests.get("https://ollama.com", timeout=5)
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            QMessageBox.critical(
-                self,
-                "No Internet Connection",
-                "Cannot download model: no internet connection detected.\n\n"
-                "Please check your network and try again."
-            )
-            return
 
         # Disable UI
         self.download_btn.setEnabled(False)
