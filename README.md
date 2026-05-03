@@ -1,6 +1,6 @@
 <div align="center">
 
-#  Ollama Chat GUI
+# 🤖 Ollama Chat GUI
 
 **Десктоп интерфейс за чат с Ollama.**
 
@@ -8,6 +8,7 @@
 ![PyQt6](https://img.shields.io/badge/PyQt6-UI-41CD52?style=flat-square&logo=qt&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-Local%20AI-black?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square)
+[![Download](https://img.shields.io/github/v/release/mtn0027/OllamaGui?style=flat-square&label=⬇️%20Download&color=007AFF)](https://github.com/mtn0027/OllamaGui/releases/latest)
 
 ![Main Window](ollama-main-window.png)
 
@@ -17,13 +18,22 @@
 
 ## 📋 Нужен софтуер
 
-- **Python 3.8+**
-- **Ollama** инсталиран и пуснат ([линк за изтегляне](https://ollama.ai))
-- Няколко основни Python пакета (изброени по-долу)
+- **[Ollama](https://ollama.ai)** инсталиран и пуснат — единственото задължително изискване
+- Python 3.8+ _(само ако стартирате от изходния код)_
 
 ---
 
 ## 🚀 Бърз старт
+
+### ▶ Опция 1 — Директно изпълнение (Windows)
+
+1. Свалете `OllamaChat.exe` от [Releases](https://github.com/mtn0027/OllamaGui/releases/latest)
+2. Инсталирайте и пуснете [Ollama](https://ollama.ai)
+3. Стартирайте `OllamaChat.exe`
+
+> Не е нужен Python или каквито и да е библиотеки.
+
+### 🐍 Опция 2 — От изходния код
 
 **1. Клонирайте или свалете това repo**
 ```bash
